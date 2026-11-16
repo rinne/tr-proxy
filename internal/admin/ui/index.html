@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TR Proxy</title>
+<link rel="stylesheet" href="/ui/style.css">
+<script defer src="/ui/app.js"></script>
+<script defer src="/ui/alpine.min.js"></script>
+</head>
+<body x-data="app()" x-cloak>
+
+<!-- Sign in -->
+<main class="signin" x-show="ready && !authed">
+  <form class="signin-card" @submit.prevent="signIn()">
+    <h1>TR Proxy</h1>
+    <label>Username
+      <input type="text" x-model="login.username" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input type="password" x-model="login.password" autocomplete="current-password" required>
+    </label>
+    <label x-show="totp">Code from your authenticator
+      <input type="text" x-model="login.totp" inputmode="numeric" autocomplete="one-time-code" maxlength="7">
+    </label>
+    <p class="error" x-show="login.error" x-text="login.error" role="alert"></p>
+    <button class="primary" type="submit" :disabled="login.busy">Sign in</button>
+  </form>
+</main>
+
+<!-- App -->
+<div class="shell" x-show="ready && authed && cfg">
+  <nav class="side" aria-label="Sections">
+    <div class="brand">TR Proxy</div>
+    <ul>
+      <template x-for="v in views" :key="v.id">
+        <li><a :href="'#' + v.id" :aria-current="view === v.id ? 'page' : false" @click.prevent="show(v.id)" x-text="v.label"></a></li>
+      </template>
+    </ul>
+    <div class="side-foot">
+      <span class="link-state" :class="live ? 'is-live' : 'is-stale'" x-text="live ? 'Live' : 'Reconnecting'"></span>
+      <button class="quiet" type="button" @click="signOut()">Sign out</button>
+    </div>
+  </nav>
+
+  <main class="main" x-show="cfg">
+    <p class="banner" x-show="status?.configError" role="alert">
+      The config file could not be used at start-up, so the proxy is running on an empty config.
+      Saving any change here replaces the file. <span x-text="status?.configError"></span>
+    </p>
+
+    <!-- Status -->
+    <section x-show="view === 'status'">
+      <h1>Status</h1>
+
+      <h2>Tunnels</h2>
+      <p class="empty" x-show="!status?.tunnels.length">
+        No WireGuard connections yet. <a href="#tunnels" @click.prevent="show('tunnels')">Add one under Tunnels.</a>
+      </p>
+      <div class="tunnels" x-show="status?.tunnels.length">
+        <template x-for="t in status?.tunnels || []" :key="t.name">
+          <article class="tunnel" :data-state="t.state">
+            <header>
+              <h3 x-text="t.name"></h3>
+              <span class="state" x-text="t.state"></span>
+            </header>
+            <dl>
+              <div><dt>Peer</dt><dd x-text="t.endpoint"></dd></div>
+              <div><dt>Handshake</dt><dd x-text="handshakeAge(t)"></dd></div>
+              <div><dt>Probe</dt><dd x-text="probeText(t)"></dd></div>
+              <div><dt>Received</dt><dd x-text="formatBytes(t.rx)"></dd></div>
+              <div><dt>Sent</dt><dd x-text="formatBytes(t.tx)"></dd></div>
+              <div><dt>Restarts</dt><dd x-text="t.restarts"></dd></div>
+            </dl>
+            <p class="tunnel-error" x-show="t.lastError && t.state !== 'up'" x-text="t.lastError"></p>
+            <button class="quiet" type="button" @click="restart(t.name)">Restart</button>
+          </article>
+        </template>
+      </div>
+
+      <template x-if="status?.upstreams.length">
+        <div>
+          <h2>Upstream proxies</h2>
+          <table>
+            <thead><tr><th>Name</th><th>State</th><th>Last error</th></tr></thead>
+            <tbody>
+              <template x-for="u in status.upstreams" :key="u.name">
+                <tr>
+                  <td x-text="u.name"></td>
+                  <td><span class="pill" :data-state="!u.checked ? 'starting' : u.reachable ? 'up' : 'down'"
+                            x-text="!u.checked ? 'not checked yet' : u.reachable ? 'reachable' : 'unreachable'"></span></td>
+                  <td class="dim" x-text="u.lastError || ''"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
+      <h2>Listeners</h2>
+      <p class="empty" x-show="!status?.listeners.length">
+        Nothing is listening yet. <a href="#listeners" @click.prevent="show('listeners')">Add a listener</a> to accept proxy clients.
+      </p>
+      <table x-show="status?.listeners.length">
+        <thead><tr><th>Name</th><th>Type</th><th class="num">Port</th><th>Login</th><th class="num">Connections</th><th class="num">Rejected logins</th></tr></thead>
+        <tbody>
+          <template x-for="l in status?.listeners || []" :key="l.name">
+            <tr>
+              <td><span x-text="l.name"></span> <span class="pill" data-state="down" x-show="l.error" x-text="'not listening: ' + l.error"></span></td>
+              <td x-text="l.type === 'socks5' ? 'SOCKS5' : 'HTTP'"></td>
+              <td class="num" x-text="l.port"></td>
+              <td x-text="l.auth ? 'required' : 'open'"></td>
+              <td class="num" x-text="l.connections"></td>
+              <td class="num" x-text="l.authFailures"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+
+      <h2>Connections <span class="count" x-text="status?.connections.length || 0"></span></h2>
+      <p class="empty" x-show="!status?.connections.length">No connections are open right now.</p>
+      <div class="scroll" x-show="status?.connections.length">
+        <table>
+          <thead><tr><th>Destination</th><th>Via</th><th>Rule</th><th>Listener</th><th>Client</th><th class="num">Up</th><th class="num">Down</th><th class="num">Open for</th></tr></thead>
+          <tbody>
+            <template x-for="c in status?.connections || []" :key="c.id">
+              <tr>
+                <td x-text="c.destination"></td>
+                <td x-text="c.egress"></td>
+                <td x-text="c.rule || 'default'" :class="c.rule ? '' : 'dim'"></td>
+                <td x-text="c.listener"></td>
+                <td class="dim" x-text="c.client"></td>
+                <td class="num" x-text="formatBytes(c.bytesUp)"></td>
+                <td class="num" x-text="formatBytes(c.bytesDown)"></td>
+                <td class="num" x-text="connectionAge(c)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Events</h2>
+      <p class="empty" x-show="!events.length">Nothing has happened since the proxy started.</p>
+      <ol class="events" x-show="events.length">
+        <template x-for="e in recentEvents" :key="e.seq">
+          <li><time x-text="formatClock(e.time)"></time><span class="kind" x-text="e.kind"></span><span x-text="e.message"></span></li>
+        </template>
+      </ol>
+    </section>
+
+    <!-- Tunnels: keys and WireGuard connections -->
+    <section x-show="view === 'tunnels'">
+      <h1>Tunnels</h1>
+
+      <div class="head">
+        <h2>WireGuard connections</h2>
+        <button type="button" @click="add('wireguard')" :disabled="!cfg?.keys.length">Add connection</button>
+      </div>
+      <p class="empty" x-show="!cfg?.wireguard.length">
+        <span x-show="!cfg?.keys.length">Add a local key first; a connection needs one.</span>
+        <span x-show="cfg?.keys.length">No connections yet. Each one runs as its own tunnel process.</span>
+      </p>
+      <table x-show="cfg?.wireguard.length">
+        <thead><tr><th>Name</th><th>State</th><th>Peer</th><th>Local address</th><th>Key</th><th>DNS</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="w in cfg?.wireguard || []" :key="w.name">
+            <tr>
+              <td x-text="w.name"></td>
+              <td><span class="pill" :data-state="tunnelStatus(w.name)?.state || 'starting'" x-text="tunnelStatus(w.name)?.state || '…'"></span></td>
+              <td x-text="w.peer.endpoint"></td>
+              <td x-text="w.addresses.join(', ')"></td>
+              <td x-text="w.localKey"></td>
+              <td x-text="(w.dns || []).join(', ') || 'none'" :class="w.dns?.length ? '' : 'dim'"></td>
+              <td class="actions">
+                <button class="quiet" type="button" @click="edit('wireguard', w)">Edit</button>
+                <button class="quiet danger" type="button" @click="remove('wireguard', w.name)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+
+      <div class="head">
+        <h2>Local keys</h2>
+        <button type="button" @click="add('keys')">Add key</button>
+      </div>
+      <p class="empty" x-show="!cfg?.keys.length">No keys yet. Generate one here, then give its public key to the VPN server.</p>
+      <table x-show="cfg?.keys.length">
+        <thead><tr><th>Name</th><th>Public key</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="k in cfg?.keys || []" :key="k.name">
+            <tr>
+              <td x-text="k.name"></td>
+              <td><code x-text="k.publicKey"></code></td>
+              <td class="actions">
+                <button class="quiet" type="button" @click="copy(k.publicKey)">Copy public key</button>
+                <button class="quiet danger" type="button" @click="remove('keys', k.name)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Upstreams -->
+    <section x-show="view === 'upstreams'">
+      <div class="head">
+        <h1>Upstream proxies</h1>
+        <button type="button" @click="add('upstreams')">Add upstream proxy</button>
+      </div>
+      <p class="empty" x-show="!cfg?.upstreams.length">No upstream proxies. Add one to send traffic through another HTTP proxy.</p>
+      <table x-show="cfg?.upstreams.length">
+        <thead><tr><th>Name</th><th>URL</th><th>Login</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="u in cfg?.upstreams || []" :key="u.name">
+            <tr>
+              <td x-text="u.name"></td>
+              <td x-text="u.url"></td>
+              <td x-text="u.auth ? (u.auth.type === 'basic' ? 'username ' + u.auth.username : 'token') : 'none'" :class="u.auth ? '' : 'dim'"></td>
+              <td class="actions">
+                <button class="quiet" type="button" @click="edit('upstreams', u)">Edit</button>
+                <button class="quiet danger" type="button" @click="remove('upstreams', u.name)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Listeners -->
+    <section x-show="view === 'listeners'">
+      <div class="head">
+        <h1>Listeners</h1>
+        <button type="button" @click="add('listeners')">Add listener</button>
+      </div>
+      <p class="empty" x-show="!cfg?.listeners.length">No listeners. Add a SOCKS5 or HTTP listener for clients to connect to.</p>
+      <table x-show="cfg?.listeners.length">
+        <thead><tr><th>Name</th><th>Type</th><th class="num">Port</th><th>Login</th><th>Default route</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="l in cfg?.listeners || []" :key="l.name">
+            <tr>
+              <td x-text="l.name"></td>
+              <td x-text="l.type === 'socks5' ? 'SOCKS5' : 'HTTP'"></td>
+              <td class="num" x-text="l.port"></td>
+              <td x-text="l.auth ? l.auth.users.map(u => u.username).join(', ') : 'open'" :class="l.auth ? '' : 'dim'"></td>
+              <td x-text="l.default || 'same as global'" :class="l.default ? '' : 'dim'"></td>
+              <td class="actions">
+                <button class="quiet" type="button" @click="edit('listeners', l)">Edit</button>
+                <button class="quiet danger" type="button" @click="remove('listeners', l.name)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Rules -->
+    <section x-show="view === 'rules'">
+      <div class="head">
+        <h1>Rules</h1>
+        <button type="button" @click="add('rules')">Add rule</button>
+      </div>
+      <p class="lede">The first rule that matches a destination decides its route.</p>
+      <p class="empty" x-show="!cfg?.rules.length">No rules. Everything takes the default route below.</p>
+      <ol class="rules">
+        <template x-for="(r, i) in cfg?.rules || []" :key="r.name">
+          <li>
+            <div class="rule-order">
+              <button class="quiet" type="button" :disabled="i === 0" @click="moveRule(i, -1)" :aria-label="'Move ' + r.name + ' up'">↑</button>
+              <button class="quiet" type="button" :disabled="i === cfg.rules.length - 1" @click="moveRule(i, 1)" :aria-label="'Move ' + r.name + ' down'">↓</button>
+            </div>
+            <div class="rule-body">
+              <h3 x-text="r.name"></h3>
+              <p class="rule-match"><template x-for="m in r.match" :key="m"><code x-text="m"></code></template></p>
+              <p class="dim" x-text="scopeText(r)"></p>
+            </div>
+            <div class="rule-via">
+              <template x-for="(v, n) in viaList(r)" :key="v">
+                <span><span class="then" x-show="n > 0">then</span><span class="egress" :data-kind="v" x-text="v"></span></span>
+              </template>
+            </div>
+            <div class="actions">
+              <button class="quiet" type="button" @click="edit('rules', r)">Edit</button>
+              <button class="quiet danger" type="button" @click="remove('rules', r.name)">Delete</button>
+            </div>
+          </li>
+        </template>
+        <li class="rule-default">
+          <div class="rule-order"></div>
+          <div class="rule-body">
+            <h3>Everything else</h3>
+            <p class="dim">Unless a listener has its own default route.</p>
+          </div>
+          <div class="rule-via">
+            <label class="inline">Route
+              <select :value="cfg?.default" @change="setDefault($event.target.value)">
+                <template x-for="e in egresses" :key="e"><option :value="e" x-text="e" :selected="e === cfg?.default"></option></template>
+              </select>
+            </label>
+          </div>
+          <div class="actions"></div>
+        </li>
+      </ol>
+
+      <h2>Try a destination</h2>
+      <form class="try" @submit.prevent="testRoute()">
+        <label>Listener
+          <select x-model="routeTest.listener">
+            <template x-for="l in cfg?.listeners || []" :key="l.name"><option :value="l.name" x-text="l.name"></option></template>
+          </select>
+        </label>
+        <label class="grow">Hostname or IP address
+          <input type="text" x-model="routeTest.host" placeholder="intranet.corp.example.com" required>
+        </label>
+        <button type="submit" :disabled="!cfg?.listeners.length">Show route</button>
+      </form>
+      <p class="empty" x-show="!cfg?.listeners.length">Add a listener to try routes.</p>
+      <p class="error" x-show="routeTest.error" x-text="routeTest.error" role="alert"></p>
+      <p class="try-result" x-show="routeTest.result">
+        <span x-text="routeTest.result?.rule ? 'Rule ' + routeTest.result.rule : 'No rule matches; the default applies'"></span>,
+        <span x-show="routeTest.result?.egress && !routeTest.result?.error">so it goes via <strong x-text="routeTest.result?.egress"></strong>.</span>
+        <span x-show="routeTest.result?.egress === 'block'">so it is blocked.</span>
+        <span x-show="routeTest.result?.error && routeTest.result?.egress !== 'block'">but nothing in
+          <strong x-text="(routeTest.result?.via || []).join(', ')"></strong> is healthy, so the connection would be refused.</span>
+      </p>
+    </section>
+
+    <!-- Raw -->
+    <section x-show="view === 'raw'">
+      <div class="head">
+        <h1>Config as JSON</h1>
+        <div>
+          <button class="quiet" type="button" @click="resetRaw()" :disabled="!raw.dirty">Discard changes</button>
+          <button class="primary" type="button" @click="saveRaw()" :disabled="raw.busy || !raw.dirty">Save config</button>
+        </div>
+      </div>
+      <p class="lede">The whole config. Secrets show as <code x-text="REDACTED"></code>; leave them like that to keep the stored value.</p>
+      <p class="error" x-show="raw.error" x-text="raw.error" role="alert"></p>
+      <ul class="problems" x-show="raw.problems.length">
+        <template x-for="p in raw.problems" :key="p"><li x-text="p"></li></template>
+      </ul>
+      <textarea class="raw" spellcheck="false" x-model="raw.text" @input="raw.dirty = true" aria-label="Config as JSON"></textarea>
+    </section>
+  </main>
+
+  <p class="toast" x-show="notice" x-text="notice" role="status"></p>
+</div>
+
+<!-- Dialog -->
+<dialog class="dialog" x-ref="dialog" :aria-label="dialogTitle" @close="dialog = null" @click.self="closeDialog()">
+  <template x-if="dialog">
+    <form class="dialog-form" @submit.prevent="save()">
+      <h2 x-text="dialogTitle"></h2>
+
+      <!-- key -->
+      <template x-if="dialog.kind === 'keys'">
+        <div class="fields">
+          <label>Name <input type="text" x-model="dialog.form.name" placeholder="home-key" required></label>
+          <fieldset>
+            <legend>Secret key</legend>
+            <label class="check"><input type="radio" name="key-source" :checked="dialog.form.generate" @change="dialog.form.generate = true"> Generate a new one</label>
+            <label class="check"><input type="radio" name="key-source" :checked="!dialog.form.generate" @change="dialog.form.generate = false"> Use an existing one</label>
+          </fieldset>
+          <label x-show="!dialog.form.generate">Existing secret key
+            <input type="password" x-model="dialog.form.secretKey" autocomplete="off" :required="!dialog.form.generate">
+          </label>
+        </div>
+      </template>
+
+      <!-- wireguard -->
+      <template x-if="dialog.kind === 'wireguard'">
+        <div class="fields">
+          <div class="row">
+            <label>Name <input type="text" x-model="dialog.form.name" placeholder="Office1" required></label>
+            <label>Local key
+              <select x-model="dialog.form.localKey" required>
+                <template x-for="k in cfg.keys" :key="k.name"><option :value="k.name" x-text="k.name" :selected="k.name === dialog.form.localKey"></option></template>
+              </select>
+            </label>
+          </div>
+          <label>Local address in the tunnel
+            <input type="text" x-model="dialog.form.addresses" placeholder="10.8.0.5/32" required>
+            <small>The address the peer has assigned to this key. Separate several with commas.</small>
+          </label>
+          <div class="row">
+            <label>Peer endpoint <input type="text" x-model="dialog.form.endpoint" placeholder="vpn.example.com:51820" required></label>
+            <label>Keepalive, seconds <input type="number" min="0" max="65535" x-model="dialog.form.keepalive" placeholder="25"></label>
+          </div>
+          <label>Peer public key <input type="text" x-model="dialog.form.publicKey" required></label>
+          <label>Preshared key
+            <input type="text" x-model="dialog.form.presharedKey" autocomplete="off" placeholder="none">
+          </label>
+          <div class="row">
+            <label>DNS servers in the tunnel <input type="text" x-model="dialog.form.dns" placeholder="10.8.0.1"></label>
+            <label>MTU <input type="number" min="576" max="65535" x-model="dialog.form.mtu" placeholder="1420"></label>
+          </div>
+          <fieldset>
+            <legend>Health probe</legend>
+            <div class="row">
+              <label>Check
+                <select x-model="dialog.form.probeType">
+                  <option value="">Automatic</option>
+                  <option value="dns">DNS query to the tunnel's DNS server</option>
+                  <option value="tcp">TCP connect to a target</option>
+                  <option value="icmp">Ping a target</option>
+                  <option value="handshake">Handshake age only</option>
+                </select>
+              </label>
+              <label x-show="dialog.form.probeType === 'tcp' || dialog.form.probeType === 'icmp'">Target
+                <input type="text" x-model="dialog.form.probeTarget" :placeholder="dialog.form.probeType === 'tcp' ? '10.8.0.1:443' : '10.8.0.1'">
+              </label>
+            </div>
+            <div class="row three">
+              <label>Every, seconds <input type="number" min="1" x-model="dialog.form.probeInterval" placeholder="15"></label>
+              <label>Timeout, seconds <input type="number" min="1" x-model="dialog.form.probeTimeout" placeholder="5"></label>
+              <label>Failures before restart <input type="number" min="1" x-model="dialog.form.probeFailures" placeholder="3"></label>
+            </div>
+          </fieldset>
+        </div>
+      </template>
+
+      <!-- upstream -->
+      <template x-if="dialog.kind === 'upstreams'">
+        <div class="fields">
+          <label>Name <input type="text" x-model="dialog.form.name" placeholder="H-Proxy" required></label>
+          <label>URL <input type="text" x-model="dialog.form.url" placeholder="https://proxy.example.com:8443/" required></label>
+          <label>Login
+            <select x-model="dialog.form.authType">
+              <option value="none">None</option>
+              <option value="basic">Username and password</option>
+              <option value="bearer">Token</option>
+            </select>
+          </label>
+          <div class="row" x-show="dialog.form.authType === 'basic'">
+            <label>Username <input type="text" x-model="dialog.form.username" autocomplete="off"></label>
+            <label>Password <input type="text" x-model="dialog.form.password" autocomplete="off"></label>
+          </div>
+          <label x-show="dialog.form.authType === 'bearer'">Token <input type="text" x-model="dialog.form.token" autocomplete="off"></label>
+        </div>
+      </template>
+
+      <!-- listener -->
+      <template x-if="dialog.kind === 'listeners'">
+        <div class="fields">
+          <div class="row three">
+            <label>Name <input type="text" x-model="dialog.form.name" placeholder="main-socks" required></label>
+            <label>Type
+              <select x-model="dialog.form.type">
+                <option value="socks5">SOCKS5</option>
+                <option value="http">HTTP</option>
+              </select>
+            </label>
+            <label>Port <input type="number" min="1" max="65535" x-model="dialog.form.port" placeholder="1080" required></label>
+          </div>
+          <label>Default route
+            <select x-model="dialog.form.default">
+              <option value="">Same as the global default</option>
+              <template x-for="e in egresses" :key="e"><option :value="e" x-text="e" :selected="e === dialog.form.default"></option></template>
+            </select>
+          </label>
+          <fieldset>
+            <legend>Users</legend>
+            <p class="dim" x-show="!dialog.form.users.length">No users: anyone who can reach the port can use this listener.</p>
+            <template x-for="(u, i) in dialog.form.users" :key="i">
+              <div class="row user">
+                <label>Username <input type="text" x-model="u.username" autocomplete="off" required></label>
+                <label>Password <input type="text" x-model="u.password" autocomplete="off" required></label>
+                <button class="quiet danger" type="button" @click="dialog.form.users.splice(i, 1)" :aria-label="'Remove user ' + u.username">Remove</button>
+              </div>
+            </template>
+            <button class="quiet" type="button" @click="dialog.form.users.push({ username: '', password: '' })">Add user</button>
+          </fieldset>
+        </div>
+      </template>
+
+      <!-- rule -->
+      <template x-if="dialog.kind === 'rules'">
+        <div class="fields">
+          <label>Name <input type="text" x-model="dialog.form.name" placeholder="corp" required></label>
+          <label>Destinations, one per line
+            <textarea rows="5" x-model="dialog.form.match" placeholder="*.corp.example.com&#10;10.20.0.0/16&#10;1.2.3.4-1.2.3.7" required></textarea>
+            <small>A hostname, <code>*.suffix</code>, an IP address, a network or an address range.</small>
+          </label>
+          <label>Route
+            <input type="text" x-model="dialog.form.via" placeholder="Office1, Office2" required>
+            <small>One of <span x-text="egresses.join(', ')"></span>. Several, separated by commas, are tried in order.</small>
+          </label>
+          <fieldset>
+            <legend>Applies to</legend>
+            <label class="check"><input type="radio" value="all" x-model="dialog.form.scope"> All listeners</label>
+            <label class="check"><input type="radio" value="only" x-model="dialog.form.scope"> Only these listeners</label>
+            <label class="check"><input type="radio" value="except" x-model="dialog.form.scope"> All listeners except these</label>
+            <div class="checks" x-show="dialog.form.scope !== 'all'">
+              <template x-for="l in cfg.listeners" :key="l.name">
+                <label class="check"><input type="checkbox" :value="l.name" x-model="dialog.form.listeners"> <span x-text="l.name"></span></label>
+              </template>
+              <p class="dim" x-show="!cfg.listeners.length">There are no listeners yet.</p>
+            </div>
+          </fieldset>
+        </div>
+      </template>
+
+      <p class="dim" x-show="!dialog.isNew">A secret shown as <code x-text="REDACTED"></code> keeps its stored value. Renaming an entry means entering its secrets again.</p>
+      <p class="error" x-show="dialog.error" x-text="dialog.error" role="alert"></p>
+      <ul class="problems" x-show="dialog.problems.length">
+        <template x-for="p in dialog.problems" :key="p"><li x-text="p"></li></template>
+      </ul>
+
+      <footer>
+        <button class="quiet" type="button" @click="closeDialog()">Cancel</button>
+        <button class="primary" type="submit" :disabled="dialog.busy" x-text="dialog.isNew ? 'Add' : 'Save changes'"></button>
+      </footer>
+    </form>
+  </template>
+</dialog>
+
+</body>
+</html>

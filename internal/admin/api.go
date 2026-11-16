@@ -36,6 +36,13 @@ type Backend interface {
 	RestartTunnel(name string) bool
 	// Event adds an entry to the event log.
 	Event(kind, message string)
+	// LiveStatus is Status without the event log, for the WebSocket.
+	LiveStatus() any
+	// EventsAfter returns the event log entries with a sequence number
+	// above seq, how many there are, and the highest sequence number.
+	EventsAfter(seq uint64) (events any, n int, last uint64)
+	// ConfigGeneration changes whenever a config is applied.
+	ConfigGeneration() uint64
 }
 
 // InvalidError is a config that failed validation.
@@ -81,6 +88,7 @@ func NewHandler(b Backend, creds Credentials, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/status", a.protect(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.b.Status())
 	}))
+	mux.HandleFunc("GET /api/ws", a.ws)
 	mux.HandleFunc("POST /api/test-route", a.protect(a.testRoute))
 	mux.HandleFunc("POST /api/keys/generate", a.protect(a.generateKey))
 	mux.HandleFunc("POST /api/wireguard/{name}/restart", a.protect(a.restartTunnel))
@@ -102,7 +110,12 @@ func NewHandler(b Backend, creds Credentials, log *slog.Logger) http.Handler {
 		func(c *config.Config) *[]config.Rule { return &c.Rules },
 		func(r *config.Rule) *string { return &r.Name })
 
-	return mux
+	// Anything else under /api is a JSON 404 rather than the UI.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "no such endpoint")
+	})
+	registerUI(mux)
+	return securityHeaders(mux)
 }
 
 // --- helpers ---

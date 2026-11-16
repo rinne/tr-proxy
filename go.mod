@@ -3,6 +3,7 @@ module tr-proxy
 go 1.27
 
 require (
+	github.com/coder/websocket v1.8.15
 	golang.org/x/net v0.39.0
 	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 )

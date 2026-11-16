@@ -16,7 +16,9 @@ type Status struct {
 	Upstreams   []UpstreamStatus `json:"upstreams"`
 	Listeners   []ListenerStatus `json:"listeners"`
 	Connections []proxy.ConnInfo `json:"connections"`
-	Events      []Event          `json:"events"`
+	// Events is left out of the WebSocket's snapshots, which send events
+	// separately.
+	Events []Event `json:"events,omitempty"`
 }
 
 type TunnelStatus struct {
@@ -35,8 +37,22 @@ type ListenerStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-// Status returns the live status.
-func (s *Server) Status() any { return s.status() }
+// Status returns the live status with the event log.
+func (s *Server) Status() any {
+	st := s.status()
+	st.Events = s.events.Snapshot()
+	return st
+}
+
+// LiveStatus returns the live status without the event log.
+func (s *Server) LiveStatus() any { return s.status() }
+
+func (s *Server) EventsAfter(seq uint64) (any, int, uint64) {
+	list, last := s.events.After(seq)
+	return list, len(list), last
+}
+
+func (s *Server) ConfigGeneration() uint64 { return s.generation.Load() }
 
 func (s *Server) status() Status {
 	cfg := s.state.Load().cfg
@@ -46,7 +62,6 @@ func (s *Server) status() Status {
 		Upstreams:   []UpstreamStatus{},
 		Listeners:   []ListenerStatus{},
 		Connections: s.tracker.Snapshot(),
-		Events:      s.events.Snapshot(),
 	}
 	if msg := s.configError.Load(); msg != nil {
 		out.ConfigError = *msg

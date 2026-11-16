@@ -1,7 +1,7 @@
 # TR Proxy — Specification
 
-Status: stages 1-6 implemented (everything except the web UI, the WebSocket and
-the hardening items). Config schema version: 1.
+Status: stages 1-7 implemented (everything except the hardening items).
+Config schema version: 1.
 
 ## 1. Purpose
 
@@ -34,8 +34,9 @@ cloud stacks (e.g. AWS), always inside a container.
 
 - **Language:** Go, one static binary, distroless (or scratch) image.
 - **WireGuard:** `wireguard-go` with the gVisor netstack (userspace TCP/IP).
-- **UI:** plain HTML/CSS plus Alpine.js vendored as a single file, embedded in
-  the binary. No Node toolchain, no build step.
+- **UI:** plain HTML/CSS plus Alpine.js vendored as a single file
+  (`internal/admin/ui/VENDOR.md`), embedded in the binary. No Node toolchain,
+  no build step.
 - **Realtime:** WebSocket, server to client only.
 
 ## 4. Process model
@@ -329,12 +330,63 @@ until a config is saved through the API.
 
 ### 6.3 WebSocket
 
-`/api/ws`, server to client only:
+`GET /api/ws` upgrades to a WebSocket. It needs a session and the same
+origin. The server sends JSON messages; the client sends nothing.
 
-- `status`: a full status snapshot, about once per second while a client is
-  connected,
-- `config-changed`: a nudge; the page refetches the config,
-- `event`: a log entry (worker restart, probe failure, auth failure, ...).
+| `type`           | Content                                                  |
+|------------------|----------------------------------------------------------|
+| `status`         | `status`: a status snapshot (6.4) without the event log, once per second |
+| `events`         | `events`: event log entries the client has not seen yet; the backlog comes first |
+| `config-changed` | Nothing more: the config was changed, refetch it         |
+
+The stream is closed when the session ends.
+
+### 6.4 Status view
+
+`GET /api/status` returns:
+
+- `tunnels`: per tunnel the state, worker pid, restart count, last error,
+  last heartbeat, last handshake, rx/tx bytes, the endpoint and the probe
+  (type, ok, latency in ms, consecutive failures, error).
+- `upstreams`: reachability, last error and time of the last check.
+- `listeners`: type, port, whether auth is on, active connections, rejected
+  logins, and the error if the port could not be opened.
+- `connections`: listener, client, destination, matched rule, egress, bytes
+  up and down, start time.
+- `events`: the most recent 200 events (tunnel state changes and restarts,
+  listener failures, rejected proxy logins, admin logins, config changes),
+  held in memory.
+- `configError`, if the config file was not usable at start-up.
+
+### 6.5 Web UI
+
+The admin port serves a single page at `/` with its files under `/ui/`. The
+page itself is public and holds nothing but the sign-in form until a session
+exists; all data comes from the API.
+
+- Sign in, with the code field shown when TOTP is on.
+- Status: tunnels (state, peer, handshake age, probe, traffic, restarts,
+  restart button), upstream proxies, listeners, open connections and the
+  event log, kept live over the WebSocket.
+- Tunnels: WireGuard connections and local keys. Keys are generated or
+  pasted, and their public key can be copied; they are not edited.
+- Upstream proxies, Listeners (with their users) and Rules (ordering, the
+  global default route, and a form that shows how a destination would be
+  routed).
+- Config as JSON: the whole config in a text box, saved through
+  `PUT /api/config`.
+
+Problems the server finds with a change are shown in the form and nothing is
+saved. Every response of the admin port carries a content security policy
+that allows same-origin resources only (scripts additionally `unsafe-eval`,
+which Alpine.js needs), and forbids framing.
+
+------------------------------------|
+| `status`         | `status`: a status snapshot (6.4) without the event log, once per second |
+| `events`         | `events`: event log entries the client has not seen yet; the backlog comes first |
+| `config-changed` | Nothing more: the config was changed, refetch it         |
+
+The stream is closed when the session ends.
 
 ### 6.4 Status view
 
@@ -446,7 +498,9 @@ The image is built entirely in containers (multi-stage Dockerfile); the host
 needs Docker only. It runs as uid 65532 with all capabilities dropped and
 carries its own health check (`/tr-proxy healthcheck`, which asks
 `/healthz`). On Linux hosts the config directory must be writable for that
-uid.
+uid. The same goes for `RUN_DIR`: a tmpfs mounted there needs
+`uid=65532,gid=65532,mode=0700`, as in the compose example, and the
+supervisor refuses to start if it cannot write there.
 
 Docker publishes ports statically, so the compose file publishes the admin
 port and the whole proxy port range, and listeners are confined to that range.

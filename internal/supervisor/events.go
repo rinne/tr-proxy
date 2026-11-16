@@ -37,3 +37,17 @@ func (e *events) Snapshot() []Event {
 	defer e.mu.Unlock()
 	return append([]Event{}, e.list...)
 }
+
+// After returns the events with a sequence number above seq and the highest
+// sequence number in the log.
+func (e *events) After(seq uint64) ([]Event, uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := []Event{}
+	for _, ev := range e.list {
+		if ev.Seq > seq {
+			out = append(out, ev)
+		}
+	}
+	return out, e.seq
+}

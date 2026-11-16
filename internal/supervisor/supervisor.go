@@ -34,6 +34,8 @@ type Server struct {
 	// configError is set when the config file could not be used at start-up
 	// and the server runs on an empty config instead.
 	configError atomic.Pointer[string]
+	// generation counts applied configs; the UI refetches when it changes.
+	generation atomic.Uint64
 
 	ctx       context.Context
 	workers   *Workers
@@ -83,6 +85,15 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 	if err := os.MkdirAll(env.RunDir, 0o700); err != nil {
 		return nil, fmt.Errorf("run directory: %w", err)
 	}
+	// Workers create their sockets here. Finding out now gives one clear
+	// error instead of every worker failing in a restart loop.
+	probe, err := os.CreateTemp(env.RunDir, ".writable-*")
+	if err != nil {
+		return nil, fmt.Errorf("run directory %s is not writable for uid %d (a tmpfs mounted there needs uid, gid and mode options): %w",
+			env.RunDir, os.Getuid(), err)
+	}
+	probe.Close()
+	os.Remove(probe.Name())
 	workers, err := NewWorkers(log, env.RunDir, s.events.Add)
 	if err != nil {
 		return nil, err
@@ -209,6 +220,7 @@ func (s *Server) Apply(cfg *config.Config) error {
 	}
 	s.state.Store(st)
 	s.configError.Store(nil)
+	s.generation.Add(1)
 
 	s.workers.Sync(s.workers.Specs(cfg))
 	s.syncListeners(s.ctx, cfg.Listeners)

@@ -32,7 +32,9 @@ services:
     volumes:
       - ./volumes/config:/config
     tmpfs:
-      - /run/tr-proxy
+      # Worker sockets. The options matter: a plain tmpfs here is owned by
+      # root and the container's user could not create sockets in it.
+      - /run/tr-proxy:uid=65532,gid=65532,mode=0700
     cap_drop:
       - ALL
     security_opt:
