@@ -16,10 +16,11 @@ import (
 // state is everything derived from one config. It is replaced as a whole
 // when the config changes.
 type state struct {
-	cfg     *config.Config
-	table   *router.Table
-	dialers map[string]egress.Dialer // by egress name; block is absent
-	tunnels map[string]bool          // egress names that are WireGuard connections
+	cfg       *config.Config
+	table     *router.Table
+	dialers   map[string]egress.Dialer // by egress name; block is absent
+	tunnels   map[string]bool          // egress names that are WireGuard connections
+	upstreams map[string]*egress.HTTPProxy
 }
 
 func (s *Server) newState(cfg *config.Config) (*state, error) {
@@ -28,10 +29,11 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 		return nil, err
 	}
 	st := &state{
-		cfg:     cfg,
-		table:   table,
-		dialers: map[string]egress.Dialer{config.EgressDirect: egress.Direct{}},
-		tunnels: map[string]bool{},
+		cfg:       cfg,
+		table:     table,
+		dialers:   map[string]egress.Dialer{config.EgressDirect: egress.Direct{}},
+		tunnels:   map[string]bool{},
+		upstreams: map[string]*egress.HTTPProxy{},
 	}
 	for _, w := range cfg.WireGuard {
 		st.dialers[w.Name] = egress.Worker{Socket: s.workers.SocketPath(w.Name)}
@@ -43,6 +45,7 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 			return nil, err
 		}
 		st.dialers[u.Name] = d
+		st.upstreams[u.Name] = d
 	}
 	return st, nil
 }
@@ -78,35 +81,65 @@ type routeResult struct {
 	Err    error    // proxy.ErrBlocked, proxy.ErrUnavailable or nil
 }
 
-// decide applies the rules and picks the first healthy egress of the
-// matching rule's list. If none is healthy the result fails closed.
+// decide applies the rules and picks an egress from the matching rule's
+// list: the first healthy one, or failing that the first degraded one. If
+// there is neither, the result fails closed.
 func (s *Server) decide(listener, host string) (routeResult, egress.Dialer) {
 	st := s.state.Load()
 	d := st.table.Select(listener, host)
 	res := routeResult{Rule: d.Rule, Via: d.Via}
 
+	var degraded string
 	for _, name := range d.Via {
 		if name == config.EgressBlock {
 			res.Egress, res.Err = name, proxy.ErrBlocked
 			return res, nil
 		}
-		dialer, ok := st.dialers[name]
-		if !ok || !s.healthy(st, name) {
-			continue
+		switch s.health(st, name) {
+		case healthUp:
+			res.Egress = name
+			return res, st.dialers[name]
+		case healthDegraded:
+			if degraded == "" {
+				degraded = name
+			}
 		}
-		res.Egress = name
-		return res, dialer
+	}
+	if degraded != "" {
+		res.Egress = degraded
+		return res, st.dialers[degraded]
 	}
 	res.Err = fmt.Errorf("%w (%s)", proxy.ErrUnavailable, strings.Join(d.Via, ", "))
 	return res, nil
 }
 
-// healthy reports whether an egress can take new connections.
-func (s *Server) healthy(st *state, name string) bool {
-	if st.tunnels[name] {
-		return s.workers.State(name) == ipc.StateUp
+type health int
+
+const (
+	healthDown     health = iota // must not be used
+	healthDegraded               // usable when nothing better is available
+	healthUp
+)
+
+// health reports whether an egress can take new connections.
+func (s *Server) health(st *state, name string) health {
+	switch {
+	case st.dialers[name] == nil:
+		return healthDown
+	case st.tunnels[name]:
+		switch s.workers.State(name) {
+		case ipc.StateUp:
+			return healthUp
+		case ipc.StateDegraded:
+			return healthDegraded
+		}
+		return healthDown
+	case st.upstreams[name] != nil:
+		if !s.upstreams.reachable(name) {
+			return healthDown
+		}
 	}
-	return true
+	return healthUp
 }
 
 // router adapts the server to proxy.Router.

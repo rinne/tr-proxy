@@ -102,10 +102,7 @@ func uapiConfig(ctx context.Context, c config.WireGuard, secretKey string) (stri
 	if err != nil {
 		return "", err
 	}
-	keepalive := config.DefaultKeepalive
-	if c.Peer.Keepalive != nil {
-		keepalive = *c.Peer.Keepalive
-	}
+	keepalive := c.Peer.KeepaliveSeconds()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", private)

@@ -74,6 +74,46 @@ type Probe struct {
 	Failures int    `json:"failures,omitempty"` // consecutive failures before down
 }
 
+// Probe defaults.
+const (
+	DefaultProbeInterval = 15
+	DefaultProbeTimeout  = 5
+	DefaultProbeFailures = 3
+)
+
+// EffectiveProbe returns the connection's probe with the defaults filled in:
+// dns when the connection has a DNS server, handshake otherwise.
+func (w WireGuard) EffectiveProbe() Probe {
+	var p Probe
+	if w.Probe != nil {
+		p = *w.Probe
+	}
+	if p.Type == "" {
+		p.Type = ProbeHandshake
+		if len(w.DNS) > 0 {
+			p.Type = ProbeDNS
+		}
+	}
+	if p.Interval == 0 {
+		p.Interval = DefaultProbeInterval
+	}
+	if p.Timeout == 0 {
+		p.Timeout = DefaultProbeTimeout
+	}
+	if p.Failures == 0 {
+		p.Failures = DefaultProbeFailures
+	}
+	return p
+}
+
+// KeepaliveSeconds returns the peer's keepalive with the default applied.
+func (p Peer) KeepaliveSeconds() int {
+	if p.Keepalive == nil {
+		return DefaultKeepalive
+	}
+	return *p.Keepalive
+}
+
 type Upstream struct {
 	Name string        `json:"name"`
 	Type string        `json:"type"`

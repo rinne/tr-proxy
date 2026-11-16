@@ -62,13 +62,47 @@ func NewHTTPProxy(u config.Upstream) (*HTTPProxy, error) {
 	return p, nil
 }
 
-func (p *HTTPProxy) Dial(ctx context.Context, host string, port int) (net.Conn, error) {
+// Check reports whether the upstream itself can be reached: a TCP connection
+// and, for an https upstream, the TLS handshake. It sends no request.
+func (p *HTTPProxy) Check(ctx context.Context) error {
+	c, err := p.open(ctx)
+	if err != nil {
+		return err
+	}
+	return c.Close()
+}
+
+// open connects to the upstream and completes TLS if it uses it.
+func (p *HTTPProxy) open(ctx context.Context) (net.Conn, error) {
 	d := net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}
 	c, err := d.DialContext(ctx, "tcp", p.addr)
 	if err != nil {
 		return nil, fmt.Errorf("upstream proxy: %w", err)
 	}
-	// Bound the TLS handshake and the CONNECT exchange by ctx.
+	if p.tlsName == "" {
+		return c, nil
+	}
+	cfg := &tls.Config{}
+	if p.TLSConfig != nil {
+		cfg = p.TLSConfig.Clone()
+	}
+	if cfg.ServerName == "" {
+		cfg.ServerName = p.tlsName
+	}
+	tc := tls.Client(c, cfg)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("upstream proxy: %w", err)
+	}
+	return tc, nil
+}
+
+func (p *HTTPProxy) Dial(ctx context.Context, host string, port int) (net.Conn, error) {
+	c, err := p.open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Bound the CONNECT exchange by ctx.
 	stop := context.AfterFunc(ctx, func() { c.SetDeadline(time.Now()) })
 	fail := func(err error) (net.Conn, error) {
 		stop()
@@ -77,21 +111,6 @@ func (p *HTTPProxy) Dial(ctx context.Context, host string, port int) (net.Conn, 
 			err = ctx.Err()
 		}
 		return nil, fmt.Errorf("upstream proxy: %w", err)
-	}
-
-	if p.tlsName != "" {
-		cfg := &tls.Config{}
-		if p.TLSConfig != nil {
-			cfg = p.TLSConfig.Clone()
-		}
-		if cfg.ServerName == "" {
-			cfg.ServerName = p.tlsName
-		}
-		tc := tls.Client(c, cfg)
-		if err := tc.HandshakeContext(ctx); err != nil {
-			return fail(err)
-		}
-		c = tc
 	}
 
 	target := net.JoinHostPort(host, strconv.Itoa(port))

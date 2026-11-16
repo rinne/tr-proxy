@@ -20,10 +20,6 @@ import (
 	"tr-proxy/internal/tunnel"
 )
 
-// A handshake older than this means the peer has gone quiet: WireGuard
-// renews it every two minutes while there is traffic or keepalive.
-const handshakeStale = 3 * time.Minute
-
 var errSupervisorGone = errors.New("supervisor went away")
 
 // Run reads the spec from stdin, brings the tunnel up and serves until the
@@ -66,9 +62,11 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	go serve(ctx, ln, tun, log)
 	log.Info("tunnel up", "endpoint", spec.Connection.Peer.Endpoint)
 
+	probe := newProber(tun, spec.Connection)
+	go probe.run(ctx)
+
 	out := json.NewEncoder(os.Stdout)
-	keepalive := spec.Connection.Peer.Keepalive == nil || *spec.Connection.Peer.Keepalive > 0
-	report := func() error { return out.Encode(status(tun, keepalive)) }
+	report := func() error { return out.Encode(status(tun, probe)) }
 	if err := report(); err != nil {
 		return err
 	}
@@ -90,25 +88,14 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	}
 }
 
-func status(tun *tunnel.Tunnel, keepalive bool) ipc.Status {
-	st := ipc.Status{State: ipc.StateStarting}
-	if !keepalive {
-		// Without keepalive WireGuard only handshakes when there is traffic,
-		// so a missing or old handshake says nothing.
-		st.State = ipc.StateUp
-	}
-	stats, err := tun.Stats()
-	if err != nil {
-		st.State = ipc.StateDegraded
-		st.LastError = err.Error()
-		return st
-	}
-	st.Rx, st.Tx = stats.Rx, stats.Tx
-	if !stats.LastHandshake.IsZero() {
-		st.LastHandshake = stats.LastHandshake.Unix()
-		st.State = ipc.StateUp
-		if keepalive && time.Since(stats.LastHandshake) > handshakeStale {
-			st.State = ipc.StateDegraded
+func status(tun *tunnel.Tunnel, probe *prober) ipc.Status {
+	var st ipc.Status
+	st.State, st.Probe = probe.snapshot()
+	st.LastError = st.Probe.Error
+	if stats, err := tun.Stats(); err == nil {
+		st.Rx, st.Tx = stats.Rx, stats.Tx
+		if !stats.LastHandshake.IsZero() {
+			st.LastHandshake = stats.LastHandshake.Unix()
 		}
 	}
 	return st

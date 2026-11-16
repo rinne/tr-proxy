@@ -20,9 +20,6 @@ import (
 const (
 	backoffMin = time.Second
 	backoffMax = time.Minute
-	// A worker that ran this long is considered to have been healthy, so the
-	// next restart starts from backoffMin again.
-	backoffReset = time.Minute
 	// How long a worker gets to exit after SIGTERM before it is killed.
 	stopGrace = 5 * time.Second
 )
@@ -38,10 +35,11 @@ type WorkerStatus struct {
 	LastHandshake time.Time `json:"lastHandshake,omitzero"`
 	Rx            uint64    `json:"rx"`
 	Tx            uint64    `json:"tx"`
+	Probe         ipc.Probe `json:"probe"`
 }
 
 // Workers runs one worker process per WireGuard connection and restarts any
-// that exit or stop sending heartbeats.
+// that exit, stop sending heartbeats or report their tunnel down.
 type Workers struct {
 	exe    string
 	runDir string
@@ -121,13 +119,13 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 	backoff := backoffMin
 
 	for {
-		started := time.Now()
-		err := w.runOnce(ctx, spec, log)
+		wasUp, err := w.runOnce(ctx, spec, log)
 		if ctx.Err() != nil {
 			return
 		}
 
-		if time.Since(started) >= backoffReset {
+		// A worker whose tunnel worked starts over with the shortest delay.
+		if wasUp {
 			backoff = backoffMin
 		}
 		w.update(name, func(s *WorkerStatus) {
@@ -135,6 +133,7 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 			s.PID = 0
 			s.Restarts++
 			s.LastError = fmt.Sprint(err)
+			s.Probe = ipc.Probe{Type: s.Probe.Type}
 		})
 		log.Warn("worker exited; restarting", "err", err, "in", backoff)
 
@@ -150,7 +149,7 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 // runOnce runs one worker process to completion. It returns when the process
 // has exited: on its own, because ctx was cancelled, or because it was killed
 // for missing heartbeats.
-func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) error {
+func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) (wasUp bool, err error) {
 	name := spec.Connection.Name
 
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -164,14 +163,14 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return err
+		return false, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return false, err
 	}
 	w.update(name, func(s *WorkerStatus) {
 		s.State = ipc.StateStarting
@@ -198,6 +197,12 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 			continue
 		}
 		watchdog.Reset(ipc.HeartbeatTimeout)
+		switch st.State {
+		case ipc.StateUp:
+			wasUp = true
+		case ipc.StateDown:
+			cancel(fmt.Errorf("tunnel is down: %s", st.LastError))
+		}
 		w.update(name, func(s *WorkerStatus) {
 			s.State = st.State
 			s.LastError = st.LastError
@@ -207,16 +212,17 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 				s.LastHandshake = time.Unix(st.LastHandshake, 0)
 			}
 			s.Rx, s.Tx = st.Rx, st.Tx
+			s.Probe = st.Probe
 		})
 	}
 
 	waitErr := cmd.Wait()
 	stdin.Close()
 	if cause := context.Cause(ctx); cause != nil && cause != context.Canceled {
-		return cause
+		return wasUp, cause
 	}
 	if waitErr == nil {
-		return fmt.Errorf("worker exited without an error")
+		return wasUp, fmt.Errorf("worker exited without an error")
 	}
-	return waitErr
+	return wasUp, waitErr
 }

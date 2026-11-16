@@ -73,9 +73,8 @@ answers with one JSON line, `{}` on success or `{"error": "..."}`, and after
 a success the socket carries the raw byte stream to the destination. One
 socket connection is one proxied connection.
 
-A worker reports `starting` until the first WireGuard handshake, `up` while
-the last handshake is younger than three minutes, and `degraded` after that.
-The supervisor adds `restarting` while a dead worker waits for its backoff.
+Every status line carries the tunnel state (section 8), the probe result,
+the last handshake time and the byte counters.
 
 Separate processes are for fault isolation: a hung or crashed tunnel is killed
 and restarted without touching the others.
@@ -309,31 +308,48 @@ passed on and no `X-Forwarded-*` headers are added. Failures are reported as
 403 for `block`, 503 when no egress is healthy and 502 when the dial fails.
 Any other request to the port gets a 400.
 
-A tunnel counts as healthy for routing while its worker reports `up`. A
-connection with keepalive disabled is reported `up` as soon as its worker
-runs, because without keepalive WireGuard handshakes only on traffic.
-
 A clean end of one direction is passed on as a half-close; an error closes
 both directions.
 
 ## 8. Health monitoring
 
-Each WireGuard connection has a configurable probe:
+Each WireGuard connection has a configurable probe, run by its worker:
 
 | `type`      | Check                                                        |
 |-------------|--------------------------------------------------------------|
-| `dns`       | DNS query to the tunnel's first `dns` server (default when `dns` is set) |
+| `dns`       | DNS query to the tunnel's first `dns` server; any answer counts (default when `dns` is set) |
 | `tcp`       | TCP connect to `target` (`host:port`) through the tunnel     |
-| `icmp`      | Ping `target` through the tunnel (e.g. the peer's inner gateway) |
-| `handshake` | Passive only: handshake age and counters (default without `dns`) |
+| `icmp`      | Ping `target` (address or hostname) through the tunnel, e.g. the peer's inner gateway |
+| `handshake` | Passive: the last handshake must be younger than three minutes (default without `dns`) |
 
-- Common fields: `interval`, `timeout`, `failures` (consecutive failures
-  before the tunnel is marked down), optional `target`.
-- Handshake age is always tracked as well, whatever the probe type.
-- A tunnel marked down is restarted with exponential backoff (capped). A
-  worker that stops sending heartbeats is killed and restarted.
-- While a tunnel is down, rules that point only at it fail closed; failover
-  lists skip it.
+- Fields: `interval` (seconds, default 15), `timeout` (seconds, default 5),
+  `failures` (consecutive failures before the tunnel is down, default 3) and
+  `target` for `tcp` and `icmp`.
+- With keepalive disabled a `handshake` probe has nothing to judge, because
+  WireGuard then handshakes only on traffic; such a tunnel counts as up.
+
+Tunnel states:
+
+| State        | Meaning                                                    | Routing            |
+|--------------|------------------------------------------------------------|--------------------|
+| `starting`   | Running, no probe has succeeded yet                        | not used           |
+| `up`         | The last probe succeeded                                   | used               |
+| `degraded`   | Probes are failing, fewer than `failures` in a row         | used as last resort |
+| `down`       | `failures` probes failed in a row                          | not used           |
+| `restarting` | The worker is not running and waits for its backoff        | not used           |
+
+- A tunnel that has never passed a probe is probed every second and is
+  declared down after `interval` × `failures` seconds.
+- A tunnel declared down is restarted. So is a worker that exits or sends no
+  heartbeat for ten seconds. Restarts back off exponentially from one second
+  to one minute; the delay starts over once a tunnel has been up.
+- A rule's egress list is searched for the first `up` entry, then for the
+  first `degraded` one. If there is neither, the connection fails closed.
+
+Upstream proxies are checked every 15 seconds by the supervisor: a TCP
+connection and, for `https`, the TLS handshake. An upstream whose last check
+failed is skipped like a down tunnel; one that has not been checked yet is
+used.
 
 ## 9. Deployment
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tr-proxy/internal/config"
+	"tr-proxy/internal/egress"
 	"tr-proxy/internal/proxy"
 )
 
@@ -26,6 +27,7 @@ type Server struct {
 	state atomic.Pointer[state]
 
 	workers   *Workers
+	upstreams *upstreamMonitor
 	tracker   *proxy.Tracker
 	listeners []net.Listener
 	admin     *http.Server
@@ -78,11 +80,12 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		env:      env,
-		log:      log,
-		workers:  workers,
-		tracker:  proxy.NewTracker(),
-		adminErr: make(chan error, 1),
+		env:       env,
+		log:       log,
+		workers:   workers,
+		upstreams: newUpstreamMonitor(),
+		tracker:   proxy.NewTracker(),
+		adminErr:  make(chan error, 1),
 	}
 	st, err := s.newState(cfg)
 	if err != nil {
@@ -97,6 +100,7 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.state.Load().cfg
 	s.workers.Start(ctx, cfg)
+	go s.upstreams.run(ctx, func() map[string]*egress.HTTPProxy { return s.state.Load().upstreams })
 
 	for _, l := range cfg.Listeners {
 		if err := s.startListener(ctx, l); err != nil {

@@ -34,11 +34,11 @@ type Spec struct {
 
 // Worker states.
 const (
-	StateStarting   = "starting"   // no handshake yet
-	StateUp         = "up"         // handshake is fresh
-	StateDegraded   = "degraded"   // handshake is stale or probes are failing
-	StateDown       = "down"       // not running, or declared dead
-	StateRestarting = "restarting" // waiting to be started again
+	StateStarting   = "starting"   // running, no successful probe yet
+	StateUp         = "up"         // the last probe succeeded
+	StateDegraded   = "degraded"   // probes are failing, below the threshold
+	StateDown       = "down"       // probes failed too often; will be restarted
+	StateRestarting = "restarting" // not running, waiting to be started again
 )
 
 // Status is one report from a worker.
@@ -49,4 +49,18 @@ type Status struct {
 	Rx            uint64 `json:"rx"`
 	Tx            uint64 `json:"tx"`
 	LastError     string `json:"lastError,omitempty"`
+	Probe         Probe  `json:"probe"`
+}
+
+// Probe is the state of a worker's health probe.
+type Probe struct {
+	Type string `json:"type"`
+	// Checked is false until the first probe has finished.
+	Checked bool `json:"checked"`
+	OK      bool `json:"ok"`
+	// LatencyMs is the duration of the last successful probe.
+	LatencyMs float64 `json:"latencyMs,omitempty"`
+	// Failures is the number of consecutive failed probes.
+	Failures int    `json:"failures"`
+	Error    string `json:"error,omitempty"`
 }
