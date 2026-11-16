@@ -1,0 +1,4 @@
+CLAUDE.md
+dc/docker-compose.yaml
+dc/volumes/*
+!dc/volumes/.gitkeep

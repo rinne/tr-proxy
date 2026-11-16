@@ -1,0 +1,40 @@
+# Copy to docker-compose.yaml (gitignored) and set the admin credentials.
+#
+#   cp docker-compose.yaml.EXAMPLE docker-compose.yaml
+#   docker compose up -d --build
+#
+# The container runs as uid 65532 without privileges. On Linux hosts make the
+# config directory writable for it:
+#
+#   mkdir -p volumes/config && sudo chown 65532:65532 volumes/config
+
+services:
+  tr-proxy:
+    build:
+      context: ..
+    image: tr-proxy:dev
+    restart: unless-stopped
+    environment:
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: change-me
+      # Optional, base32. When set, login also asks for a TOTP code.
+      # ADMIN_TOTP_SECRET: JBSWY3DPEHPK3PXP
+      ADMIN_PORT: "8080"
+      # Listener ports must fall inside this range; keep it in sync with the
+      # published range below.
+      PROXY_PORT_RANGE: "1080-1099"
+    ports:
+      # Published on localhost only. Publishing on other interfaces is a
+      # deployment choice; pair it with listener auth and a TLS reverse proxy
+      # in front of the admin port.
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:1080-1099:1080-1099"
+    volumes:
+      - ./volumes/config:/config
+    tmpfs:
+      - /run/tr-proxy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The health check is built into the image (GET /healthz).

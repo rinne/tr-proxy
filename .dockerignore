@@ -1,0 +1,6 @@
+.git
+.gitignore
+.dockerignore
+dc
+*.md
+Makefile
