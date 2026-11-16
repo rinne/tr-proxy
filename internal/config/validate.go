@@ -216,21 +216,50 @@ func (v *validator) upstream(at string, u Upstream) {
 	v.egressName(at, u.Name)
 	at = at + " (" + u.Name + ")"
 
-	if u.Type != "http" {
-		v.errf("%s: type must be http", at)
-	}
 	pu, err := url.Parse(u.URL)
-	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") || pu.Host == "" {
-		v.errf("%s: url must be http://host[:port]/ or https://host[:port]/", at)
+	if err != nil {
+		pu = &url.URL{}
 	}
+	switch u.Type {
+	case UpstreamHTTP:
+		if (pu.Scheme != "http" && pu.Scheme != "https") || pu.Hostname() == "" {
+			v.errf("%s: url of an http upstream must be http://host[:port]/ or https://host[:port]/", at)
+		}
+	case UpstreamSOCKS5:
+		if (pu.Scheme != "socks5" && pu.Scheme != "socks5h") || pu.Hostname() == "" {
+			v.errf("%s: url of a socks5 upstream must be socks5://host[:port]", at)
+		}
+		if pu.User != nil {
+			v.errf("%s: put the login under auth, not into the url", at)
+		}
+	default:
+		v.errf("%s: type must be http or socks5", at)
+	}
+	if p := pu.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			v.errf("%s: url has an invalid port", at)
+		}
+	}
+
 	if a := u.Auth; a != nil {
 		switch a.Type {
 		case "basic":
 			if a.Username == "" {
 				v.errf("%s: basic auth needs a username", at)
 			}
+			if u.Type == UpstreamSOCKS5 {
+				// RFC 1929: both fields are 1 to 255 bytes.
+				if a.Password == "" {
+					v.errf("%s: a socks5 login needs a password", at)
+				}
+				if len(a.Username) > 255 || len(a.Password) > 255 {
+					v.errf("%s: socks5 username and password are limited to 255 bytes each", at)
+				}
+			}
 		case "bearer":
-			if a.Token == "" {
+			if u.Type == UpstreamSOCKS5 {
+				v.errf("%s: a socks5 upstream takes basic auth (username and password), not a token", at)
+			} else if a.Token == "" {
 				v.errf("%s: bearer auth needs a token", at)
 			}
 		default:

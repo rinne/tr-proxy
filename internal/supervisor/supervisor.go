@@ -164,7 +164,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.workers.Start(ctx)
 	s.workers.Sync(s.workers.Specs(cfg))
-	go s.upstreams.run(ctx, func() map[string]*egress.HTTPProxy { return s.state.Load().upstreams })
+	go s.upstreams.run(ctx, func() map[string]egress.Upstream { return s.state.Load().upstreams })
 	s.syncListeners(ctx, cfg.Listeners)
 
 	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(s.env.AdminPort)))

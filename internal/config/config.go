@@ -175,6 +175,12 @@ func (p Peer) KeepaliveSeconds() int {
 	return *p.Keepalive
 }
 
+// Upstream proxy types.
+const (
+	UpstreamHTTP   = "http"   // HTTP proxy, reached over http or https, used with CONNECT
+	UpstreamSOCKS5 = "socks5" // SOCKS5 proxy
+)
+
 type Upstream struct {
 	Name string        `json:"name"`
 	Type string        `json:"type"`

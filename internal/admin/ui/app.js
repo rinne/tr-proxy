@@ -110,9 +110,10 @@ const forms = {
 
   upstreams: {
     title: 'upstream proxy',
-    blank: () => ({ name: '', url: '', authType: 'none', username: '', password: '', token: '' }),
+    blank: () => ({ name: '', type: 'http', url: '', authType: 'none', username: '', password: '', token: '' }),
     fromConfig: (u) => ({
       name: u.name,
+      type: u.type,
       url: u.url,
       authType: u.auth?.type || 'none',
       username: u.auth?.username || '',
@@ -120,9 +121,10 @@ const forms = {
       token: u.auth?.token || '',
     }),
     toConfig: (f) => {
-      const out = { name: f.name.trim(), type: 'http', url: f.url.trim() };
+      const out = { name: f.name.trim(), type: f.type, url: f.url.trim() };
       if (f.authType === 'basic') out.auth = { type: 'basic', username: f.username, password: f.password };
-      if (f.authType === 'bearer') out.auth = { type: 'bearer', token: f.token };
+      // A token is an HTTP proxy login only.
+      if (f.authType === 'bearer' && f.type === 'http') out.auth = { type: 'bearer', token: f.token };
       return out;
     },
   },

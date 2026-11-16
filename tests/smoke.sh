@@ -4,8 +4,8 @@
 # Builds the image, runs it the way the compose example does (read-only root
 # filesystem, no capabilities, tmpfs for the worker sockets, a named volume
 # for the config) and drives it from outside: admin API, both listener
-# types, rules, listener login, a tunnel worker, persistence over a restart
-# and a clean stop.
+# types, rules, listener login, upstream proxies of both kinds, a tunnel
+# worker, persistence over a restart and a clean stop.
 #
 # The Go tests (make test) cover the logic, WireGuard tunnels included. This
 # covers what they cannot: the image itself and how it is run.
@@ -191,6 +191,29 @@ case "$(via "http://127.0.0.1:$HTTP_PORT" http://backend:8080/healthz)" in "200 
 expect 200 POST /api/listeners/web/enable
 wait_for "the listener to come back" web_ok
 pass "disable and enable a listener"
+
+echo "==> upstream proxies"
+# The proxy's own listeners serve as upstreams. Each chain rule applies to
+# one listener only, so a chained connection takes the default route when it
+# comes back in on the other one.
+expect 201 POST /api/upstreams '{"name":"Self-SOCKS5","type":"socks5","url":"socks5://127.0.0.1:1080"}'
+expect 201 POST /api/upstreams "{\"name\":\"Self-HTTP\",\"type\":\"http\",\"url\":\"http://127.0.0.1:1082/\",\"auth\":{\"type\":\"basic\",\"username\":\"alice\",\"password\":\"$USER_PASSWORD\"}}"
+expect 400 POST /api/upstreams '{"name":"Bad","type":"socks5","url":"https://example.com/"}'
+expect 201 POST /api/rules '{"name":"chain-socks5","match":["backend"],"via":"Self-SOCKS5","onlyListeners":["web"]}'
+expect 201 POST /api/rules '{"name":"chain-http","match":["backend"],"via":"Self-HTTP","onlyListeners":["socks"]}'
+expect 200 POST /api/test-route '{"listener":"web","host":"backend"}'
+body_has '"egress":"Self-SOCKS5"' "the web listener does not route to the SOCKS5 upstream"
+[ "$(via "http://127.0.0.1:$HTTP_PORT" http://backend:8080/healthz)" = "200 ok" ] || fail "through a SOCKS5 upstream"
+[ "$(via "http://127.0.0.1:$HTTP_PORT" http://backend:8080/healthz -p)" = "200 ok" ] || fail "CONNECT through a SOCKS5 upstream"
+[ "$(via "socks5h://127.0.0.1:$SOCKS_PORT" http://backend:8080/healthz)" = "200 ok" ] || fail "through an HTTP upstream"
+upstreams_reachable() {
+    api GET /api/status >/dev/null
+    grep -q '"name":"Self-SOCKS5","reachable":true' "$BODY" && grep -q '"name":"Self-HTTP","reachable":true' "$BODY"
+}
+wait_for "the upstream checks" upstreams_reachable
+expect 204 DELETE /api/rules/chain-socks5
+expect 204 DELETE /api/rules/chain-http
+pass "SOCKS5 and HTTP upstream proxies"
 
 echo "==> tunnel worker"
 expect 201 POST /api/keys/generate '{"name":"smoke-key"}'

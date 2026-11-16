@@ -211,13 +211,14 @@
         <h1>Upstream proxies</h1>
         <button type="button" @click="add('upstreams')">Add upstream proxy</button>
       </div>
-      <p class="empty" x-show="!cfg?.upstreams.length">No upstream proxies. Add one to send traffic through another HTTP proxy.</p>
+      <p class="empty" x-show="!cfg?.upstreams.length">No upstream proxies. Add one to send traffic through another HTTP or SOCKS5 proxy.</p>
       <table x-show="cfg?.upstreams.length">
-        <thead><tr><th>Name</th><th>URL</th><th>Login</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Login</th><th></th></tr></thead>
         <tbody>
           <template x-for="u in cfg?.upstreams || []" :key="u.name">
             <tr>
               <td x-text="u.name"></td>
+              <td x-text="u.type === 'socks5' ? 'SOCKS5' : 'HTTP'"></td>
               <td x-text="u.url"></td>
               <td x-text="u.auth ? (u.auth.type === 'basic' ? 'username ' + u.auth.username : 'token') : 'none'" :class="u.auth ? '' : 'dim'"></td>
               <td class="actions">
@@ -427,20 +428,33 @@
       <!-- upstream -->
       <template x-if="dialog.kind === 'upstreams'">
         <div class="fields">
-          <label>Name <input type="text" x-model="dialog.form.name" placeholder="H-Proxy" required></label>
-          <label>URL <input type="text" x-model="dialog.form.url" placeholder="https://proxy.example.com:8443/" required></label>
+          <div class="row">
+            <label>Name <input type="text" x-model="dialog.form.name" placeholder="H-Proxy" required></label>
+            <label>Type
+              <select x-model="dialog.form.type" @change="if (dialog.form.type === 'socks5' && dialog.form.authType === 'bearer') dialog.form.authType = 'none'">
+                <option value="http">HTTP proxy</option>
+                <option value="socks5">SOCKS5 proxy</option>
+              </select>
+            </label>
+          </div>
+          <label>URL
+            <input type="text" x-model="dialog.form.url" required
+                   :placeholder="dialog.form.type === 'socks5' ? 'socks5://tor:9050' : 'https://proxy.example.com:8443/'">
+            <small x-show="dialog.form.type === 'http'">Starts with <code>http://</code> or <code>https://</code>. Connections go through it with CONNECT.</small>
+            <small x-show="dialog.form.type === 'socks5'">Starts with <code>socks5://</code>. The port is 1080 unless given.</small>
+          </label>
           <label>Login
             <select x-model="dialog.form.authType">
               <option value="none">None</option>
               <option value="basic">Username and password</option>
-              <option value="bearer">Token</option>
+              <option value="bearer" x-show="dialog.form.type === 'http'" :disabled="dialog.form.type !== 'http'">Token</option>
             </select>
           </label>
           <div class="row" x-show="dialog.form.authType === 'basic'">
             <label>Username <input type="text" x-model="dialog.form.username" autocomplete="off"></label>
             <label>Password <input type="text" x-model="dialog.form.password" autocomplete="off"></label>
           </div>
-          <label x-show="dialog.form.authType === 'bearer'">Token <input type="text" x-model="dialog.form.token" autocomplete="off"></label>
+          <label x-show="dialog.form.authType === 'bearer' && dialog.form.type === 'http'">Token <input type="text" x-model="dialog.form.token" autocomplete="off"></label>
         </div>
       </template>
 

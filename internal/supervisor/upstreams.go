@@ -55,7 +55,7 @@ func (m *upstreamMonitor) Status(name string) UpstreamStatus {
 
 // run checks the upstreams returned by current, which is asked anew every
 // round so that config changes are picked up, until ctx is cancelled.
-func (m *upstreamMonitor) run(ctx context.Context, current func() map[string]*egress.HTTPProxy) {
+func (m *upstreamMonitor) run(ctx context.Context, current func() map[string]egress.Upstream) {
 	for {
 		upstreams := current()
 		var wg sync.WaitGroup

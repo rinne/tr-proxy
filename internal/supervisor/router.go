@@ -21,7 +21,7 @@ type state struct {
 	table     *router.Table
 	dialers   map[string]egress.Dialer // by egress name; block is absent
 	tunnels   map[string]bool          // egress names that are WireGuard connections
-	upstreams map[string]*egress.HTTPProxy
+	upstreams map[string]egress.Upstream
 }
 
 func (s *Server) newState(cfg *config.Config) (*state, error) {
@@ -35,7 +35,7 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 		limits:    cfg.EffectiveLimits(),
 		dialers:   map[string]egress.Dialer{},
 		tunnels:   map[string]bool{},
-		upstreams: map[string]*egress.HTTPProxy{},
+		upstreams: map[string]egress.Upstream{},
 	}
 	st.dialers[config.EgressDirect] = egress.Direct{AllowLocal: st.limits.AllowLocalDirect}
 	for _, w := range cfg.WireGuard {
@@ -43,7 +43,7 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 		st.tunnels[w.Name] = true
 	}
 	for _, u := range cfg.Upstreams {
-		d, err := egress.NewHTTPProxy(u)
+		d, err := egress.NewUpstream(u)
 		if err != nil {
 			return nil, err
 		}

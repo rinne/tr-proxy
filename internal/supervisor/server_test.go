@@ -120,6 +120,12 @@ func socksDialer(t *testing.T, port int, auth *proxy.Auth) proxy.Dialer {
 	return d
 }
 
+// socksTransport is an HTTP transport that connects through a SOCKS5 dialer
+// and lets the proxy resolve names.
+func socksTransport(d proxy.Dialer) *http.Transport {
+	return &http.Transport{Dial: d.Dial}
+}
+
 // echoVia checks an echo round trip through a dialer.
 func echoVia(d proxy.Dialer, host string, port int) error {
 	// Bounded, so that tests of unreachable destinations do not sit out the

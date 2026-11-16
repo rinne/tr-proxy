@@ -9,7 +9,7 @@ routes each incoming connection, by destination hostname or IP address, to one
 of several egress paths:
 
 - a userspace WireGuard tunnel (any number of them, each in its own process),
-- an upstream HTTP proxy,
+- an upstream proxy (HTTP or SOCKS5),
 - a direct connection,
 - or nowhere (block).
 
@@ -188,15 +188,32 @@ routing.
 
 ### 5.3 Upstream proxies
 
-- `type`: `http` (v1). The URL scheme selects plain or TLS to the proxy.
-- `auth`: `null`, `{ "type": "basic", ... }` or `{ "type": "bearer", "token": "..." }`.
-  Secrets are write-only in the API.
-- Every connection through an upstream is a `CONNECT` tunnel, plain-HTTP
+An upstream is another proxy used as a route. Two kinds are supported:
+
+| `type`   | `url`                                              | Login (`auth`)              |
+|----------|----------------------------------------------------|-----------------------------|
+| `http`   | `http://host[:port]/` or `https://host[:port]/`; default port 80 or 443 | `basic` or `bearer` |
+| `socks5` | `socks5://host[:port]`; default port 1080. `socks5h://` is accepted and means the same. | `basic` only |
+
+- `auth`: `null`, `{ "type": "basic", "username": "...", "password": "..." }`
+  or, for `http` only, `{ "type": "bearer", "token": "..." }`. Secrets are
+  write-only in the API. A login is given under `auth`, never inside the URL.
+- An `http` upstream is used with `CONNECT` for every connection, plain-HTTP
   requests included (`CONNECT host:80`). An upstream that refuses `CONNECT`
-  to port 80 cannot carry plain HTTP.
-- The upstream is reached directly from the container. An `https` upstream
-  is verified against the system certificate roots.
-- The destination hostname is resolved by the upstream.
+  to port 80 cannot carry plain HTTP. With an `https` URL the connection to
+  the upstream itself is TLS, verified against the system certificate roots.
+- A `socks5` upstream is used with the SOCKS5 `CONNECT` command (RFC 1928).
+  With a `basic` login the username/password method (RFC 1929) is offered
+  alongside "no authentication", and both fields must be 1 to 255 bytes.
+  The connection to the upstream is not encrypted.
+- The upstream is reached directly from the container, at whatever address
+  it has, loopback included.
+- The destination is handed to the upstream as the client gave it. A
+  hostname is therefore resolved by the upstream, not by the container,
+  which is also what makes names that only the upstream knows work (for
+  instance `.onion` names with a Tor client as the upstream).
+- A refusal by the upstream, or a destination it cannot reach, is reported
+  to the client as a failed dial (section 7).
 
 ### 5.4 Listeners
 
@@ -533,8 +550,9 @@ Tunnel states:
 - A rule's egress list is searched for the first `up` entry, then for the
   first `degraded` one. If there is neither, the connection fails closed.
 
-Upstream proxies are checked every 15 seconds by the supervisor: a TCP
-connection and, for `https`, the TLS handshake. An upstream whose last check
+Upstream proxies of both kinds are checked every 15 seconds by the
+supervisor: a TCP connection and, for an `https` upstream, the TLS
+handshake. No request is sent through them. An upstream whose last check
 failed is skipped like a down tunnel; one that has not been checked yet is
 used.
 
@@ -600,8 +618,7 @@ deployment choice and should go together with listener auth.
 
 - SOCKS5 UDP ASSOCIATE
 - IPv6 (inside tunnels and on listeners)
-- SOCKS5 upstream proxies
-- Chaining an upstream proxy through a tunnel
+- Reaching an upstream proxy through a tunnel
 - Other VPN types as egress kinds
 - TLS on the admin port
 - Hashed listener passwords

@@ -98,7 +98,21 @@ func TestValidateRejects(t *testing.T) {
 		{"shared namespace", func(c *Config) { c.Upstreams[0].Name = "Office1" }, "duplicate name"},
 		{"dns probe without dns", func(c *Config) { c.WireGuard[0].DNS = nil }, "needs a dns server"},
 		{"tcp probe without target", func(c *Config) { c.WireGuard[0].Probe = &Probe{Type: ProbeTCP} }, "target host:port"},
-		{"upstream url", func(c *Config) { c.Upstreams[0].URL = "socks5://x" }, "url must be"},
+		{"upstream url", func(c *Config) { c.Upstreams[0].URL = "socks5://x" }, "url of an http upstream"},
+		{"upstream type", func(c *Config) { c.Upstreams[0].Type = "socks4" }, "type must be http or socks5"},
+		{"upstream port", func(c *Config) { c.Upstreams[0].URL = "http://x:99999/" }, "invalid port"},
+		{"socks5 url", func(c *Config) { c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "http://x:1080"} }, "url of a socks5 upstream"},
+		{"socks5 login in url", func(c *Config) { c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://u:p@x:1080"} }, "under auth"},
+		{"socks5 bearer", func(c *Config) {
+			c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://x", Auth: &UpstreamAuth{Type: "bearer", Token: "t"}}
+		}, "not a token"},
+		{"socks5 no password", func(c *Config) {
+			c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://x", Auth: &UpstreamAuth{Type: "basic", Username: "u"}}
+		}, "needs a password"},
+		{"socks5 long username", func(c *Config) {
+			c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://x",
+				Auth: &UpstreamAuth{Type: "basic", Username: strings.Repeat("u", 256), Password: "p"}}
+		}, "255 bytes"},
 		{"port out of range", func(c *Config) { c.Listeners[0].Port = 8080 }, "outside PROXY_PORT_RANGE"},
 		{"port clash", func(c *Config) { c.Listeners[1].Port = 1080 }, "already used"},
 		{"empty auth", func(c *Config) { c.Listeners[0].Auth.Users = nil }, "auth has no users"},
@@ -246,5 +260,19 @@ func TestEffectiveLimits(t *testing.T) {
 	want = EffectiveLimits{MaxConnections: 1024, IdleTimeout: time.Hour, DrainTimeout: 0}
 	if got != want {
 		t.Errorf("partial: %+v, want %+v", got, want)
+	}
+}
+
+func TestSOCKS5UpstreamIsValid(t *testing.T) {
+	for _, u := range []Upstream{
+		{Name: "S1", Type: "socks5", URL: "socks5://tor:9050"},
+		{Name: "S2", Type: "socks5", URL: "socks5h://127.0.0.1"},
+		{Name: "S3", Type: "socks5", URL: "socks5://[::1]:1080", Auth: &UpstreamAuth{Type: "basic", Username: "u", Password: "p"}},
+	} {
+		c := mustParse(t, sample)
+		c.Upstreams = append(c.Upstreams, u)
+		if err := Validate(c, testPorts); err != nil {
+			t.Errorf("%s (%s) rejected: %v", u.Name, u.URL, err)
+		}
 	}
 }

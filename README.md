@@ -9,7 +9,7 @@ Containerized SOCKS5/HTTP proxy that routes by hostname or IP through multiple u
 - SOCKS5 and HTTP proxy listeners, as many as you like, each optionally with its own users.
 - Any number of **WireGuard tunnels**, each in its own process, each with its own DNS.
 - Routing **by destination hostname or IP address**: exact names, `*.suffix`, addresses, networks and ranges.
-- Routes: a tunnel, an upstream HTTP proxy, direct, or block. A rule can name **several routes for failover** and fails closed when none is healthy.
+- Routes: a tunnel, an upstream proxy (HTTP, HTTPS or SOCKS5), direct, or block. A rule can name **several routes for failover** and fails closed when none is healthy.
 - Rules can be limited to some listeners or excluded from some; a listener can have its own default route.
 - **Health monitoring**: each tunnel is probed (DNS, TCP, ping or handshake age) and restarted when it stops working.
 - **Web UI** with live status: tunnels, handshakes, traffic, every open connection and the route it took, recent events.
@@ -94,6 +94,22 @@ docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:1080-1099:1080-1099 \
 - A rule's route can be a list. The first healthy entry is used. If none is healthy the connection is refused; it never falls back to a direct connection unless `direct` is in the list.
 - A rule can be limited to some listeners or excluded from some, and a listener can have its own default route.
 - A hostname is resolved where the connection leaves: by the tunnel's DNS servers, by the upstream proxy, or by the container for `direct`.
+
+## Upstream Proxies
+
+An upstream proxy is another proxy used as a route. It can be an HTTP proxy, reached over plain HTTP or HTTPS and used with `CONNECT`, or a SOCKS5 proxy:
+
+```json
+"upstreams": [
+  { "name": "Corp", "type": "http", "url": "https://proxy.example.com:8443/",
+    "auth": { "type": "basic", "username": "alice", "password": "..." } },
+  { "name": "Tor", "type": "socks5", "url": "socks5://tor:9050" }
+]
+```
+
+An HTTP upstream can log in with a username and password or with a bearer token; a SOCKS5 upstream with a username and password.
+
+The destination is handed to the upstream as the client sent it, so hostnames are resolved by the upstream. Anything that offers a SOCKS5 or HTTP proxy port can therefore be a route without being built into this image: a Tor client in a sidecar container, for example, with a rule that sends `*.onion` to it. Upstreams are checked for reachability, shown on the Status page, and can be part of a failover list like any other route.
 
 ## Configuration
 
@@ -251,11 +267,11 @@ scripts/publish.sh 0.1.0
 
 In order:
 
-1. Guards: on `main`, clean working tree, a `CHANGELOG.md` entry for the version, no git tag and no registry tag of that version yet.
+1. Guards: on `main`, clean working tree, a `CHANGELOG.md` entry for the version, no registry tag of that version yet, and no git tag `v<version>` unless it names the commit being released.
 2. Pull the current base images, then `make check`, `make test` and `tests/smoke.sh`.
 3. Build and push `:<version>`.
 4. Promote `:latest` with `buildx imagetools create` (manifest only, no rebuild).
-5. `git tag v<version>` and push the tag.
+5. `git tag v<version>`, unless the tag was made beforehand, and push the tag.
 
 The build passes `--pull`, so the published image always starts from the registry's current base images. `:latest` only moves once the versioned tag has been pushed.
 
@@ -291,7 +307,7 @@ CHANGELOG.md           release notes
 
 - SOCKS5 UDP
 - IPv6
-- SOCKS5 upstream proxies, and reaching an upstream proxy through a tunnel
+- Reaching an upstream proxy through a tunnel
 - TLS on the admin port itself
 
 ## License
