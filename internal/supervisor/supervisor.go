@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"tr-proxy/internal/config"
@@ -20,9 +21,9 @@ import (
 
 // Server is the supervisor's state.
 type Server struct {
-	env *Env
-	log *slog.Logger
-	cfg *config.Config
+	env   *Env
+	log   *slog.Logger
+	state atomic.Pointer[state]
 
 	workers   *Workers
 	tracker   *proxy.Tracker
@@ -76,22 +77,28 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	s := &Server{
 		env:      env,
 		log:      log,
-		cfg:      cfg,
 		workers:  workers,
 		tracker:  proxy.NewTracker(),
 		adminErr: make(chan error, 1),
-	}, nil
+	}
+	st, err := s.newState(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.state.Store(st)
+	return s, nil
 }
 
 // Start launches the workers, the proxy listeners and the admin server. They
 // run until ctx is cancelled; call Shutdown afterwards to wait for them.
 func (s *Server) Start(ctx context.Context) error {
-	s.workers.Start(ctx, s.cfg)
+	cfg := s.state.Load().cfg
+	s.workers.Start(ctx, cfg)
 
-	for _, l := range s.cfg.Listeners {
+	for _, l := range cfg.Listeners {
 		if err := s.startListener(ctx, l); err != nil {
 			return err
 		}
@@ -112,14 +119,10 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) startListener(ctx context.Context, l config.Listener) error {
-	srv := &proxy.Server{Name: l.Name, Router: router{s}, Tracker: s.tracker, Log: s.log}
-	var serve func(context.Context, net.Listener)
-	switch l.Type {
-	case "socks5":
-		serve = srv.ServeSOCKS5
-	default:
-		s.log.Warn("listener type is not implemented yet; skipping", "listener", l.Name, "type", l.Type)
-		return nil
+	srv := &proxy.Server{Name: l.Name, Router: proxyRouter{s}, Tracker: s.tracker, Log: s.log}
+	serve := srv.ServeSOCKS5
+	if l.Type == "http" {
+		serve = srv.ServeHTTP
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(l.Port)))

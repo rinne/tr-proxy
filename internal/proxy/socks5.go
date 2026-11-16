@@ -54,7 +54,7 @@ func (s *Server) handleSOCKS5(ctx context.Context, c net.Conn) {
 		return
 	}
 
-	up, tracked, err := s.connect(ctx, c.RemoteAddr(), host, port)
+	up, tracked, err := s.connect(ctx, c.RemoteAddr().String(), host, port)
 	if err != nil {
 		code := byte(socksHostUnreachable)
 		switch {

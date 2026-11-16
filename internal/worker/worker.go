@@ -24,6 +24,8 @@ import (
 // renews it every two minutes while there is traffic or keepalive.
 const handshakeStale = 3 * time.Minute
 
+var errSupervisorGone = errors.New("supervisor went away")
+
 // Run reads the spec from stdin, brings the tunnel up and serves until the
 // context is cancelled or stdin closes.
 func Run(ctx context.Context, log *slog.Logger) error {
@@ -43,7 +45,7 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	defer cancel(nil)
 	go func() {
 		io.Copy(io.Discard, stdin)
-		cancel(errors.New("supervisor went away"))
+		cancel(errSupervisorGone)
 	}()
 
 	tun, err := tunnel.Up(ctx, spec.Connection, spec.SecretKey, log)
@@ -65,7 +67,8 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	log.Info("tunnel up", "endpoint", spec.Connection.Peer.Endpoint)
 
 	out := json.NewEncoder(os.Stdout)
-	report := func() error { return out.Encode(status(tun)) }
+	keepalive := spec.Connection.Peer.Keepalive == nil || *spec.Connection.Peer.Keepalive > 0
+	report := func() error { return out.Encode(status(tun, keepalive)) }
 	if err := report(); err != nil {
 		return err
 	}
@@ -74,8 +77,8 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
-			if cause := context.Cause(ctx); cause != context.Canceled {
-				return cause
+			if errors.Is(context.Cause(ctx), errSupervisorGone) {
+				return errSupervisorGone
 			}
 			log.Info("worker stopping")
 			return nil
@@ -87,8 +90,13 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	}
 }
 
-func status(tun *tunnel.Tunnel) ipc.Status {
+func status(tun *tunnel.Tunnel, keepalive bool) ipc.Status {
 	st := ipc.Status{State: ipc.StateStarting}
+	if !keepalive {
+		// Without keepalive WireGuard only handshakes when there is traffic,
+		// so a missing or old handshake says nothing.
+		st.State = ipc.StateUp
+	}
 	stats, err := tun.Stats()
 	if err != nil {
 		st.State = ipc.StateDegraded
@@ -99,7 +107,7 @@ func status(tun *tunnel.Tunnel) ipc.Status {
 	if !stats.LastHandshake.IsZero() {
 		st.LastHandshake = stats.LastHandshake.Unix()
 		st.State = ipc.StateUp
-		if time.Since(stats.LastHandshake) > handshakeStale {
+		if keepalive && time.Since(stats.LastHandshake) > handshakeStale {
 			st.State = ipc.StateDegraded
 		}
 	}

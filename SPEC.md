@@ -293,6 +293,17 @@ destinations. Other commands are refused. Failures are reported with SOCKS
 reply codes: "not allowed by ruleset" for `block`, "general failure" when no
 egress is healthy, "host unreachable" when the dial fails.
 
+HTTP listeners accept `CONNECT host:port` tunnels and plain-HTTP requests
+with an absolute `http://` URL. Each forwarded plain-HTTP request is routed
+on its own and uses its own upstream connection; `Proxy-*` headers are not
+passed on and no `X-Forwarded-*` headers are added. Failures are reported as
+403 for `block`, 503 when no egress is healthy and 502 when the dial fails.
+Any other request to the port gets a 400.
+
+A tunnel counts as healthy for routing while its worker reports `up`. A
+connection with keepalive disabled is reported `up` as soon as its worker
+runs, because without keepalive WireGuard handshakes only on traffic.
+
 A clean end of one direction is passed on as a half-close; an error closes
 both directions.
 

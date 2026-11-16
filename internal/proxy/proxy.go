@@ -51,13 +51,13 @@ type Server struct {
 // connect routes and dials the destination. On success the returned
 // connection counts bytes into the tracked entry, which the caller must
 // finish with Done.
-func (s *Server) connect(ctx context.Context, client net.Addr, host string, port int) (net.Conn, *Tracked, error) {
+func (s *Server) connect(ctx context.Context, client, host string, port int) (net.Conn, *Tracked, error) {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	dest := net.JoinHostPort(host, strconv.Itoa(port))
 
 	route, err := s.Router.Route(s.Name, host)
 	if err != nil {
-		s.Log.Info("refused", "listener", s.Name, "client", client.String(), "destination", dest, "reason", err.Error())
+		s.Log.Info("refused", "listener", s.Name, "client", client, "destination", dest, "reason", err.Error())
 		return nil, nil, err
 	}
 
@@ -65,14 +65,14 @@ func (s *Server) connect(ctx context.Context, client net.Addr, host string, port
 	defer cancel()
 	up, err := route.Dialer.Dial(ctx, host, port)
 	if err != nil {
-		s.Log.Info("dial failed", "listener", s.Name, "client", client.String(), "destination", dest,
+		s.Log.Info("dial failed", "listener", s.Name, "client", client, "destination", dest,
 			"rule", route.Rule, "egress", route.Egress, "err", err.Error())
 		return nil, nil, fmt.Errorf("via %s: %w", route.Egress, err)
 	}
 
 	tracked := s.Tracker.Add(ConnInfo{
 		Listener:    s.Name,
-		Client:      client.String(),
+		Client:      client,
 		Destination: dest,
 		Rule:        route.Rule,
 		Egress:      route.Egress,

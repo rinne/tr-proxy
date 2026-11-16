@@ -98,6 +98,16 @@ func (w *Workers) Status() []WorkerStatus {
 	return out
 }
 
+// State returns the named worker's state, or StateDown if there is none.
+func (w *Workers) State(name string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if s, ok := w.status[name]; ok {
+		return s.State
+	}
+	return ipc.StateDown
+}
+
 func (w *Workers) update(name string, f func(s *WorkerStatus)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
