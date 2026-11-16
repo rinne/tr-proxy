@@ -50,6 +50,17 @@ type Server struct {
 	Auth func(username, password string) bool
 	// OnAuthFailure, if set, is told about every rejected login.
 	OnAuthFailure func(client, username string)
+	// IdleTimeout, if set, returns how long a connection may sit without a
+	// byte moving before it is closed; 0 means never. It is asked for every
+	// new connection.
+	IdleTimeout func() time.Duration
+}
+
+func (s *Server) idle() time.Duration {
+	if s.IdleTimeout == nil {
+		return 0
+	}
+	return s.IdleTimeout()
 }
 
 // authenticate checks credentials and counts a failure.
@@ -84,6 +95,9 @@ func (s *Server) connect(ctx context.Context, client, host string, port int) (ne
 	if err != nil {
 		s.Log.Info("dial failed", "listener", s.Name, "client", client, "destination", dest,
 			"rule", route.Rule, "egress", route.Egress, "err", err.Error())
+		if errors.Is(err, egress.ErrLocalDestination) {
+			return nil, nil, fmt.Errorf("%w: %w", ErrBlocked, err)
+		}
 		return nil, nil, fmt.Errorf("via %s: %w", route.Egress, err)
 	}
 
@@ -93,6 +107,6 @@ func (s *Server) connect(ctx context.Context, client, host string, port int) (ne
 		Destination: dest,
 		Rule:        route.Rule,
 		Egress:      route.Egress,
-	})
+	}, up)
 	return counted{Conn: up, c: tracked}, tracked, nil
 }

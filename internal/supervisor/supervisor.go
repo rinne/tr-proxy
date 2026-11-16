@@ -37,7 +37,10 @@ type Server struct {
 	// generation counts applied configs; the UI refetches when it changes.
 	generation atomic.Uint64
 
+	// ctx is what workers, listeners and monitors run under. It is not the
+	// context given to Start: Shutdown cancels it only after draining.
 	ctx       context.Context
+	cancel    context.CancelFunc
 	workers   *Workers
 	upstreams *upstreamMonitor
 	tracker   *proxy.Tracker
@@ -148,9 +151,11 @@ func (s *Server) loadOrCreateConfig() (*config.Config, error) {
 }
 
 // Start launches the workers, the proxy listeners and the admin server. They
-// run until ctx is cancelled; call Shutdown afterwards to wait for them.
+// run until Shutdown; cancelling ctx alone stops nothing, so that open
+// connections can be drained first.
 func (s *Server) Start(ctx context.Context) error {
-	s.ctx = ctx
+	s.ctx, s.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	ctx = s.ctx
 	cfg := s.state.Load().cfg
 
 	s.workers.Start(ctx)
@@ -170,6 +175,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.admin = &http.Server{
 		Handler:           admin.NewHandler(s, creds, s.log),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
 	}
 	go func() {
 		if err := s.admin.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -180,16 +187,37 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown stops accepting, closes the admin server and waits for the
-// workers, which stop when the context given to Start is cancelled.
+// Shutdown stops accepting, gives open connections the drain timeout to
+// finish, closes what is left, and stops the workers.
 func (s *Server) Shutdown() {
 	s.closeListeners()
 	if s.admin != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		s.admin.Shutdown(ctx)
+		cancel()
+	}
+	s.drain(s.state.Load().limits.DrainTimeout)
+	s.tracker.CloseAll()
+	if s.cancel != nil {
+		s.cancel()
 	}
 	s.workers.Wait()
+}
+
+// drain waits until no proxied connection is open, or for timeout.
+func (s *Server) drain(timeout time.Duration) {
+	open := s.tracker.Len()
+	if open == 0 || timeout <= 0 {
+		return
+	}
+	s.log.Info("waiting for open connections to finish", "connections", open, "timeout", timeout)
+	deadline := time.Now().Add(timeout)
+	for s.tracker.Len() > 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if left := s.tracker.Len(); left > 0 {
+		s.log.Info("closing connections that did not finish in time", "connections", left)
+	}
 }
 
 // --- admin.Backend ---

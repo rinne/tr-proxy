@@ -135,5 +135,7 @@ func handle(ctx context.Context, c net.Conn, tun *tunnel.Tunnel) {
 	if err := ipc.WriteResponse(c, nil); err != nil {
 		return
 	}
-	netutil.Relay(c, up)
+	// No idle timeout here: the supervisor's side of this connection
+	// enforces it and closes the socket.
+	netutil.Relay(c, up, 0)
 }

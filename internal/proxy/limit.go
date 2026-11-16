@@ -1,0 +1,57 @@
+package proxy
+
+import (
+	"net"
+	"sync"
+	"sync/atomic"
+)
+
+// LimitListener wraps a listener so that at most max() connections are open
+// at a time. A connection beyond that is closed as soon as it is accepted
+// and onRefuse is called. max is asked on every accept, so the limit can
+// change while the listener runs.
+func LimitListener(ln net.Listener, max func() int, onRefuse func()) net.Listener {
+	return &limitListener{Listener: ln, max: max, onRefuse: onRefuse}
+}
+
+type limitListener struct {
+	net.Listener
+	max      func() int
+	onRefuse func()
+	open     atomic.Int64
+}
+
+func (l *limitListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		if l.open.Add(1) > int64(l.max()) {
+			l.open.Add(-1)
+			c.Close()
+			l.onRefuse()
+			continue
+		}
+		return &limitConn{Conn: c, l: l}, nil
+	}
+}
+
+// limitConn gives its slot back when it is closed.
+type limitConn struct {
+	net.Conn
+	l    *limitListener
+	once sync.Once
+}
+
+func (c *limitConn) Close() error {
+	c.once.Do(func() { c.l.open.Add(-1) })
+	return c.Conn.Close()
+}
+
+func (c *limitConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Close()
+}

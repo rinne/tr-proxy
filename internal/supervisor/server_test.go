@@ -64,6 +64,12 @@ func runServer(t *testing.T, env *Env) *Server {
 func startServer(t *testing.T, cfg *config.Config) *Server {
 	t.Helper()
 	env := newTestEnv(t)
+	if cfg.Limits == nil {
+		// The tests' destinations live on loopback, and nothing should wait
+		// at the end of a test for connections a test left open.
+		noDrain := 0
+		cfg.Limits = &config.Limits{AllowLocalDirect: true, DrainTimeout: &noDrain}
+	}
 	if err := config.Validate(cfg, env.ProxyPorts); err != nil {
 		t.Fatalf("test config is invalid:\n%v", err)
 	}

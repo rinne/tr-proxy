@@ -102,6 +102,18 @@ func (v *validator) run() {
 		v.rule(fmt.Sprintf("rules[%d]", i), r, ruleNames)
 	}
 
+	if l := c.Limits; l != nil {
+		if l.MaxConnections != nil && (*l.MaxConnections < 1 || *l.MaxConnections > 1_000_000) {
+			v.errf("limits: maxConnections must be 1-1000000")
+		}
+		if l.IdleTimeout != nil && (*l.IdleTimeout < 0 || *l.IdleTimeout > 7*24*3600) {
+			v.errf("limits: idleTimeout must be 0 (never) to 604800 seconds")
+		}
+		if l.DrainTimeout != nil && (*l.DrainTimeout < 0 || *l.DrainTimeout > 3600) {
+			v.errf("limits: drainTimeout must be 0-3600 seconds")
+		}
+	}
+
 	if c.Default == "" {
 		v.errf("default: required (direct, block or a connection name)")
 	} else {

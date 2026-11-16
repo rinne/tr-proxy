@@ -17,6 +17,7 @@ import (
 // when the config changes.
 type state struct {
 	cfg       *config.Config
+	limits    config.EffectiveLimits
 	table     *router.Table
 	dialers   map[string]egress.Dialer // by egress name; block is absent
 	tunnels   map[string]bool          // egress names that are WireGuard connections
@@ -31,10 +32,12 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 	st := &state{
 		cfg:       cfg,
 		table:     table,
-		dialers:   map[string]egress.Dialer{config.EgressDirect: egress.Direct{}},
+		limits:    cfg.EffectiveLimits(),
+		dialers:   map[string]egress.Dialer{},
 		tunnels:   map[string]bool{},
 		upstreams: map[string]*egress.HTTPProxy{},
 	}
+	st.dialers[config.EgressDirect] = egress.Direct{AllowLocal: st.limits.AllowLocalDirect}
 	for _, w := range cfg.WireGuard {
 		st.dialers[w.Name] = egress.Worker{Socket: s.workers.SocketPath(w.Name)}
 		st.tunnels[w.Name] = true

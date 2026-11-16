@@ -34,6 +34,9 @@ type ListenerStatus struct {
 	Disabled     bool   `json:"disabled"`
 	Connections  int    `json:"connections"`
 	AuthFailures uint64 `json:"authFailures"`
+	// Refused counts connections closed because the listener was at its
+	// connection limit.
+	Refused uint64 `json:"refused"`
 	// Error is set when the listener could not be started.
 	Error string `json:"error,omitempty"`
 }
@@ -88,6 +91,7 @@ func (s *Server) status() Status {
 			Disabled:     l.Disabled,
 			Connections:  s.tracker.Count(l.Name),
 			AuthFailures: s.tracker.AuthFailures(l.Name),
+			Refused:      s.tracker.Refused(l.Name),
 			Error:        errs[l.Name],
 		})
 	}

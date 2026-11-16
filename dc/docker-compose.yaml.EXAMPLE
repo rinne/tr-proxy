@@ -35,8 +35,14 @@ services:
       # Worker sockets. The options matter: a plain tmpfs here is owned by
       # root and the container's user could not create sockets in it.
       - /run/tr-proxy:uid=65532,gid=65532,mode=0700
+    # The container needs no privileges and writes only to the two mounts
+    # above.
+    read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # On stop, open connections get limits.drainTimeout (default 5 s) to
+    # finish. Keep this comfortably above that.
+    stop_grace_period: 15s
     # The health check is built into the image (GET /healthz).

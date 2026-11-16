@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"io"
 	"net"
 	"sort"
 	"sync"
@@ -28,10 +29,51 @@ type Tracker struct {
 	conns map[uint64]*Tracked
 	// authFailures counts rejected credentials per listener.
 	authFailures map[string]uint64
+	// refused counts connections turned away at the limit, per listener.
+	refused map[string]uint64
 }
 
 func NewTracker() *Tracker {
-	return &Tracker{conns: map[uint64]*Tracked{}, authFailures: map[string]uint64{}}
+	return &Tracker{conns: map[uint64]*Tracked{}, authFailures: map[string]uint64{}, refused: map[string]uint64{}}
+}
+
+// Refuse records one connection turned away because the listener was at its
+// connection limit, and returns the new count.
+func (t *Tracker) Refuse(listener string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.refused[listener]++
+	return t.refused[listener]
+}
+
+// Refused returns the number of connections turned away on a listener.
+func (t *Tracker) Refused(listener string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.refused[listener]
+}
+
+// Len returns the number of active connections.
+func (t *Tracker) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.conns)
+}
+
+// CloseAll closes every active connection's destination side, which ends
+// its relay.
+func (t *Tracker) CloseAll() {
+	t.mu.Lock()
+	var closers []io.Closer
+	for _, c := range t.conns {
+		if c.closer != nil {
+			closers = append(closers, c.closer)
+		}
+	}
+	t.mu.Unlock()
+	for _, c := range closers {
+		c.Close()
+	}
 }
 
 // AuthFailure records one rejected login on a listener.
@@ -52,17 +94,19 @@ func (t *Tracker) AuthFailures(listener string) uint64 {
 type Tracked struct {
 	tracker  *Tracker
 	info     ConnInfo
+	closer   io.Closer
 	up, down atomic.Uint64
 }
 
-// Add registers a connection; call Done when it ends.
-func (t *Tracker) Add(info ConnInfo) *Tracked {
+// Add registers a connection; call Done when it ends. closer, if not nil,
+// is what CloseAll closes to end the connection.
+func (t *Tracker) Add(info ConnInfo, closer io.Closer) *Tracked {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.next++
 	info.ID = t.next
 	info.Started = time.Now()
-	c := &Tracked{tracker: t, info: info}
+	c := &Tracked{tracker: t, info: info, closer: closer}
 	t.conns[info.ID] = c
 	return c
 }

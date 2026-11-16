@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Version is the config schema version this build reads and writes.
@@ -33,6 +34,63 @@ type Config struct {
 	Listeners []Listener  `json:"listeners"`
 	Rules     []Rule      `json:"rules"`
 	Default   string      `json:"default"`
+	Limits    *Limits     `json:"limits,omitempty"`
+}
+
+// Limits are the optional safety limits. A field left out takes its
+// default.
+type Limits struct {
+	// MaxConnections is the number of client connections one listener
+	// serves at a time; further ones are closed at once.
+	MaxConnections *int `json:"maxConnections,omitempty"`
+	// IdleTimeout, in seconds, ends a proxied connection on which nothing
+	// has moved in either direction for that long. 0 means never.
+	IdleTimeout *int `json:"idleTimeout,omitempty"`
+	// DrainTimeout, in seconds, is how long shutdown waits for open
+	// connections to finish. 0 means not at all.
+	DrainTimeout *int `json:"drainTimeout,omitempty"`
+	// AllowLocalDirect lets the direct egress reach loopback and link-local
+	// addresses, which it refuses otherwise.
+	AllowLocalDirect bool `json:"allowLocalDirect,omitempty"`
+}
+
+// Limit defaults.
+const (
+	DefaultMaxConnections = 1024
+	DefaultIdleTimeout    = 3600
+	DefaultDrainTimeout   = 5
+)
+
+// EffectiveLimits is Limits with the defaults applied.
+type EffectiveLimits struct {
+	MaxConnections   int
+	IdleTimeout      time.Duration // 0: never
+	DrainTimeout     time.Duration
+	AllowLocalDirect bool
+}
+
+// EffectiveLimits returns the config's limits with defaults filled in.
+func (c *Config) EffectiveLimits() EffectiveLimits {
+	out := EffectiveLimits{
+		MaxConnections: DefaultMaxConnections,
+		IdleTimeout:    DefaultIdleTimeout * time.Second,
+		DrainTimeout:   DefaultDrainTimeout * time.Second,
+	}
+	l := c.Limits
+	if l == nil {
+		return out
+	}
+	if l.MaxConnections != nil {
+		out.MaxConnections = *l.MaxConnections
+	}
+	if l.IdleTimeout != nil {
+		out.IdleTimeout = time.Duration(*l.IdleTimeout) * time.Second
+	}
+	if l.DrainTimeout != nil {
+		out.DrainTimeout = time.Duration(*l.DrainTimeout) * time.Second
+	}
+	out.AllowLocalDirect = l.AllowLocalDirect
+	return out
 }
 
 type Key struct {

@@ -26,7 +26,13 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})).With("role", "worker")
+		// Quiet by default; a test that wants to read the workers' log
+		// starts them with a second argument.
+		level := slog.LevelWarn
+		if len(os.Args) > 2 && os.Args[2] == "verbose" {
+			level = slog.LevelDebug
+		}
+		log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})).With("role", "worker")
 		if err := worker.Run(ctx, log); err != nil {
 			log.Error("exiting", "err", err)
 			os.Exit(1)

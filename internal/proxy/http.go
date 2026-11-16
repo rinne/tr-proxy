@@ -41,7 +41,9 @@ func (s *Server) ServeHTTP(ctx context.Context, ln net.Listener) {
 			if err != nil {
 				return nil, err
 			}
-			return &trackedConn{Conn: up, tracked: tracked}, nil
+			// net/http moves the bytes of a forwarded request, so the idle
+			// timeout is put on the connection itself.
+			return &trackedConn{Conn: &netutil.IdleConn{Conn: up, Idle: s.idle()}, tracked: tracked}, nil
 		},
 		ResponseHeaderTimeout: 2 * time.Minute,
 	}
@@ -144,7 +146,7 @@ func (s *Server) handleConnect(ctx context.Context, w http.ResponseWriter, r *ht
 			return
 		}
 	}
-	netutil.Relay(client, up)
+	netutil.Relay(client, up, s.idle())
 }
 
 // httpError maps a connect failure to a proxy response.

@@ -74,7 +74,7 @@ func (s *Server) handleSOCKS5(ctx context.Context, c net.Conn) {
 		return
 	}
 	c.SetDeadline(time.Time{})
-	netutil.Relay(c, up)
+	netutil.Relay(c, up, s.idle())
 }
 
 // socksHandshake negotiates the method and reads the CONNECT request. All

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 32 zero bytes, base64. Valid in form only.
@@ -108,6 +109,9 @@ func TestValidateRejects(t *testing.T) {
 		{"only and except", func(c *Config) { c.Rules[1].OnlyListeners = []string{"main-socks"} }, "mutually exclusive"},
 		{"unknown listener", func(c *Config) { c.Rules[1].ExceptListeners = []string{"nope"} }, "unknown listener"},
 		{"no default", func(c *Config) { c.Default = "" }, "default: required"},
+		{"max connections", func(c *Config) { n := 0; c.Limits = &Limits{MaxConnections: &n} }, "maxConnections"},
+		{"idle timeout", func(c *Config) { n := -1; c.Limits = &Limits{IdleTimeout: &n} }, "idleTimeout"},
+		{"drain timeout", func(c *Config) { n := 4000; c.Limits = &Limits{DrainTimeout: &n} }, "drainTimeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,5 +219,32 @@ func TestParsePortRange(t *testing.T) {
 		if _, err := ParsePortRange(bad); err == nil {
 			t.Errorf("ParsePortRange(%q) accepted", bad)
 		}
+	}
+}
+
+func TestEffectiveLimits(t *testing.T) {
+	c := New()
+	got := c.EffectiveLimits()
+	want := EffectiveLimits{MaxConnections: 1024, IdleTimeout: time.Hour, DrainTimeout: 5 * time.Second}
+	if got != want {
+		t.Errorf("defaults: %+v, want %+v", got, want)
+	}
+
+	c = mustParse(t, `{"version":1,"default":"direct","limits":{"maxConnections":10,"idleTimeout":0,"drainTimeout":30,"allowLocalDirect":true}}`)
+	if err := Validate(c, testPorts); err != nil {
+		t.Fatal(err)
+	}
+	got = c.EffectiveLimits()
+	want = EffectiveLimits{MaxConnections: 10, IdleTimeout: 0, DrainTimeout: 30 * time.Second, AllowLocalDirect: true}
+	if got != want {
+		t.Errorf("explicit: %+v, want %+v", got, want)
+	}
+
+	// Only some fields given: the others keep their defaults.
+	c = mustParse(t, `{"version":1,"default":"direct","limits":{"drainTimeout":0}}`)
+	got = c.EffectiveLimits()
+	want = EffectiveLimits{MaxConnections: 1024, IdleTimeout: time.Hour, DrainTimeout: 0}
+	if got != want {
+		t.Errorf("partial: %+v, want %+v", got, want)
 	}
 }

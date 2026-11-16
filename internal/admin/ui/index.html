@@ -102,7 +102,7 @@
         Nothing is listening yet. <a href="#listeners" @click.prevent="show('listeners')">Add a listener</a> to accept proxy clients.
       </p>
       <table x-show="status?.listeners.length">
-        <thead><tr><th>Name</th><th>Type</th><th class="num">Port</th><th>Login</th><th class="num">Connections</th><th class="num">Rejected logins</th></tr></thead>
+        <thead><tr><th>Name</th><th>Type</th><th class="num">Port</th><th>Login</th><th class="num">Connections</th><th class="num">Rejected logins</th><th class="num">Refused at limit</th></tr></thead>
         <tbody>
           <template x-for="l in status?.listeners || []" :key="l.name">
             <tr>
@@ -114,6 +114,7 @@
               <td x-text="l.auth ? 'required' : 'open'"></td>
               <td class="num" x-text="l.connections"></td>
               <td class="num" x-text="l.authFailures"></td>
+              <td class="num" x-text="l.refused"></td>
             </tr>
           </template>
         </tbody>

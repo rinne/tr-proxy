@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -47,7 +48,11 @@ type Workers struct {
 	runDir  string
 	log     *slog.Logger
 	onEvent func(kind, message string)
-	wg      sync.WaitGroup
+	// stderr is where the workers' own log output goes.
+	stderr io.Writer
+	// args are the arguments that make the executable a worker.
+	args []string
+	wg   sync.WaitGroup
 
 	// syncMu serializes Sync and Restart.
 	syncMu sync.Mutex
@@ -74,7 +79,7 @@ func NewWorkers(log *slog.Logger, runDir string, onEvent func(kind, message stri
 	if onEvent == nil {
 		onEvent = func(string, string) {}
 	}
-	return &Workers{exe: exe, runDir: runDir, log: log, onEvent: onEvent, running: map[string]*workerProc{}}, nil
+	return &Workers{exe: exe, runDir: runDir, log: log, onEvent: onEvent, stderr: os.Stderr, args: []string{"worker"}, running: map[string]*workerProc{}}, nil
 }
 
 // SocketPath is where the named connection's worker serves dial requests.
@@ -261,9 +266,9 @@ func (w *Workers) runOnce(ctx context.Context, wk *workerProc, log *slog.Logger)
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
-	cmd := exec.CommandContext(ctx, w.exe, "worker")
+	cmd := exec.CommandContext(ctx, w.exe, w.args...)
 	cmd.Env = []string{} // workers get no environment; the spec is all they need
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = w.stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = stopGrace
 

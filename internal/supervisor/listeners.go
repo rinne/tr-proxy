@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 
 	"tr-proxy/internal/config"
 	"tr-proxy/internal/proxy"
@@ -79,9 +80,14 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 			s.events.Add("listener", fmt.Sprintf("%s: failed to start: %v", l.Name, err))
 			continue
 		}
+		name := l.Name
+		// The limit and the idle timeout are read from the current config
+		// each time, so changing them needs no new listener.
+		ln = proxy.LimitListener(ln,
+			func() int { return s.state.Load().limits.MaxConnections },
+			func() { s.refused(name) })
 		a.ln = ln
 
-		name := l.Name
 		srv := &proxy.Server{
 			Name:    name,
 			Router:  proxyRouter{s},
@@ -91,6 +97,7 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 			OnAuthFailure: func(client, username string) {
 				s.events.Add("auth", fmt.Sprintf("%s: login rejected for %q from %s", name, username, client))
 			},
+			IdleTimeout: func() time.Duration { return s.state.Load().limits.IdleTimeout },
 		}
 		serve := srv.ServeSOCKS5
 		if l.Type == "http" {
@@ -98,6 +105,18 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 		}
 		go serve(ctx, ln)
 		s.log.Info("listener started", "listener", l.Name, "type", l.Type, "port", l.Port)
+	}
+}
+
+// refused counts a connection turned away at the limit. The event log gets
+// the first one and then every thousandth, so that a flood cannot push
+// everything else out of it.
+func (s *Server) refused(listener string) {
+	n := s.tracker.Refuse(listener)
+	if n == 1 || n%1000 == 0 {
+		limit := s.state.Load().limits.MaxConnections
+		s.log.Warn("connection limit reached", "listener", listener, "limit", limit, "refused", n)
+		s.events.Add("listener", fmt.Sprintf("%s: at its limit of %d connections; %d refused so far", listener, limit, n))
 	}
 }
 

@@ -1,7 +1,6 @@
 # TR Proxy — Specification
 
-Status: stages 1-7 implemented (everything except the hardening items).
-Config schema version: 1.
+Status: implemented, except the items in section 11. Config schema version: 1.
 
 ## 1. Purpose
 
@@ -151,7 +150,13 @@ as a whole.
       "via": "block"
     }
   ],
-  "default": "direct"
+  "default": "direct",
+  "limits": {
+    "maxConnections": 1024,
+    "idleTimeout": 3600,
+    "drainTimeout": 5,
+    "allowLocalDirect": false
+  }
 }
 ```
 
@@ -239,6 +244,30 @@ match IP matchers; a client that sends a hostname (SOCKS5 with remote DNS,
 HTTP `CONNECT`) is matched on the hostname, and the hostname is then resolved
 on the chosen egress path: tunnel DNS for WireGuard, the upstream itself for
 HTTP proxies, the container resolver for `direct`.
+
+### 5.6 Limits
+
+`limits` and each of its fields are optional; a field left out takes its
+default. Changes apply to the running proxy at once, without reopening
+listeners or interrupting connections.
+
+| Field              | Default | Meaning                                    |
+|--------------------|---------|--------------------------------------------|
+| `maxConnections`   | 1024    | Client connections one listener serves at a time. A connection beyond that is closed as soon as it is accepted, and counted. Connections still in their handshake count too. |
+| `idleTimeout`      | 3600    | Seconds. A proxied connection on which no byte has moved in either direction for this long is closed. So is one whose write has been stuck that long. 0 means never. |
+| `drainTimeout`     | 5       | Seconds that shutdown waits for open connections; 0 means not at all. |
+| `allowLocalDirect` | false   | Whether `direct` may connect to loopback, link-local, multicast and unspecified addresses. |
+
+A quiet direction does not time out while the other one is busy: a long
+download with a silent client stays up.
+
+Unless `allowLocalDirect` is set, `direct` refuses those addresses, judged by
+the address actually connected to after name resolution, and the client gets
+the same answer as for a `block` rule. This keeps proxy clients from the
+container's own admin API and listeners and from a cloud host's metadata
+service. It applies to destinations of `direct` only: an upstream proxy or a
+WireGuard endpoint on such an address is still used, and private networks
+are not refused.
 
 ## 6. Admin API and UI
 
@@ -358,13 +387,15 @@ The stream is closed when the session ends.
   (type, ok, latency in ms, consecutive failures, error).
 - `upstreams`: reachability, last error and time of the last check.
 - `listeners`: type, port, whether auth is on, whether it is disabled,
-  active connections, rejected logins, and the error if the port could not
-  be opened.
+  active connections, rejected logins, connections refused at the connection
+  limit, and the error if the port could not be opened.
 - `connections`: listener, client, destination, matched rule, egress, bytes
   up and down, start time.
 - `events`: the most recent 200 events (tunnel state changes and restarts,
-  listener failures, rejected proxy logins, admin logins, config changes),
-  held in memory.
+  listener failures, rejected proxy logins, admin logins, config changes, a
+  listener reaching its connection limit), held in memory. Of the
+  connections refused at the limit, the first and then every thousandth is
+  logged, so that a flood cannot push everything else out.
 - `configError`, if the config file was not usable at start-up.
 
 ### 6.5 Web UI
@@ -407,13 +438,15 @@ The stream is closed when the session ends.
   (type, ok, latency in ms, consecutive failures, error).
 - `upstreams`: reachability, last error and time of the last check.
 - `listeners`: type, port, whether auth is on, whether it is disabled,
-  active connections, rejected logins, and the error if the port could not
-  be opened.
+  active connections, rejected logins, connections refused at the connection
+  limit, and the error if the port could not be opened.
 - `connections`: listener, client, destination, matched rule, egress, bytes
   up and down, start time.
 - `events`: the most recent 200 events (tunnel state changes and restarts,
-  listener failures, rejected proxy logins, admin logins, config changes),
-  held in memory.
+  listener failures, rejected proxy logins, admin logins, config changes, a
+  listener reaching its connection limit), held in memory. Of the
+  connections refused at the limit, the first and then every thousandth is
+  logged, so that a flood cannot push everything else out.
 - `configError`, if the config file was not usable at start-up.
 
 ## 7. Request flow
@@ -445,6 +478,25 @@ Any other request to the port gets a 400.
 
 A clean end of one direction is passed on as a half-close; an error closes
 both directions.
+
+### 7.1 Reload and shutdown
+
+A config change never interrupts a connection that is already open, with one
+exception: a connection through a tunnel whose worker the change restarts.
+A connection keeps the route it was given when it was opened, even if the
+rules now say otherwise, and a listener that is closed, disabled or reopened
+leaves the connections it accepted alone.
+
+On shutdown (SIGTERM or SIGINT) the supervisor:
+
+1. closes the listeners and the admin server, so nothing new comes in;
+2. waits up to `drainTimeout` for open connections to finish, with the
+   tunnel workers still running;
+3. closes whatever is left and stops the workers.
+
+It exits as soon as the last connection is gone; the timeout is only the
+upper bound. The container's stop grace period must be longer than
+`drainTimeout`, or Docker kills the process mid-drain.
 
 ## 8. Health monitoring
 
@@ -509,7 +561,8 @@ Environment:
 | `RUN_DIR`           | worker sockets, default `/run/tr-proxy`         |
 
 The image is built entirely in containers (multi-stage Dockerfile); the host
-needs Docker only. It runs as uid 65532 with all capabilities dropped and
+needs Docker only. It runs as uid 65532 with all capabilities dropped, on a
+read-only root filesystem (it writes only to the config volume and `RUN_DIR`), and
 carries its own health check (`/tr-proxy healthcheck`, which asks
 `/healthz`). On Linux hosts the config directory must be writable for that
 uid. The same goes for `RUN_DIR`: a tmpfs mounted there needs
@@ -529,8 +582,12 @@ deployment choice and should go together with listener auth.
 - Listener auth is per listener and is the access control for the proxy
   itself; open listeners are intended for localhost-only publishing.
 - With `direct` as an egress, proxy clients can reach whatever the container
-  can, its own loopback and Docker network included. The admin API is still
-  behind its login.
+  can, except loopback and link-local addresses (5.6). That includes the
+  Docker network and private networks; use `block` rules where that is not
+  wanted.
+- No secret is written to the logs, the event log or the status: not keys,
+  not passwords, not tokens, and not the passwords that failed logins tried.
+  A rejected proxy login is logged with the username and client address.
 
 ## 11. Backlog (not in v1)
 
