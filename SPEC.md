@@ -288,6 +288,14 @@ All under `/api`, JSON, session required.
    its worker's unix socket. A failover list takes the first healthy entry.
 5. Bytes are relayed both ways; counters feed the status view.
 
+SOCKS5 listeners implement `CONNECT` with IPv4, IPv6 and domain-name
+destinations. Other commands are refused. Failures are reported with SOCKS
+reply codes: "not allowed by ruleset" for `block`, "general failure" when no
+egress is healthy, "host unreachable" when the dial fails.
+
+A clean end of one direction is passed on as a half-close; an error closes
+both directions.
+
 ## 8. Health monitoring
 
 Each WireGuard connection has a configurable probe:

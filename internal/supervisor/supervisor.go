@@ -1,6 +1,6 @@
 // Package supervisor is the container's main process: it owns the config,
-// runs the admin HTTP server and keeps one worker per WireGuard connection
-// alive.
+// runs the proxy listeners and the admin HTTP server, and keeps one worker
+// per WireGuard connection alive.
 package supervisor
 
 import (
@@ -15,7 +15,21 @@ import (
 	"time"
 
 	"tr-proxy/internal/config"
+	"tr-proxy/internal/proxy"
 )
+
+// Server is the supervisor's state.
+type Server struct {
+	env *Env
+	log *slog.Logger
+	cfg *config.Config
+
+	workers   *Workers
+	tracker   *proxy.Tracker
+	listeners []net.Listener
+	admin     *http.Server
+	adminErr  chan error
+}
 
 // Run is the supervisor's main loop. It returns when ctx is cancelled and
 // everything has shut down, or on a fatal start-up error.
@@ -24,10 +38,29 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-
-	cfg, err := loadOrCreateConfig(env, log)
+	s, err := New(env, log)
 	if err != nil {
 		return err
+	}
+	if err := s.Start(ctx); err != nil {
+		s.Shutdown()
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+	case err = <-s.adminErr:
+		err = fmt.Errorf("admin server: %w", err)
+	}
+	s.Shutdown()
+	return err
+}
+
+// New loads the config and prepares a server; nothing runs until Start.
+func New(env *Env, log *slog.Logger) (*Server, error) {
+	cfg, err := loadOrCreateConfig(env, log)
+	if err != nil {
+		return nil, err
 	}
 	log.Info("config loaded",
 		"path", env.ConfigPath,
@@ -37,35 +70,80 @@ func Run(ctx context.Context, log *slog.Logger) error {
 		"rules", len(cfg.Rules))
 
 	if err := os.MkdirAll(env.RunDir, 0o700); err != nil {
-		return fmt.Errorf("run directory: %w", err)
+		return nil, fmt.Errorf("run directory: %w", err)
 	}
 	workers, err := NewWorkers(log, env.RunDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	workers.Start(ctx, cfg)
+	return &Server{
+		env:      env,
+		log:      log,
+		cfg:      cfg,
+		workers:  workers,
+		tracker:  proxy.NewTracker(),
+		adminErr: make(chan error, 1),
+	}, nil
+}
 
-	srv := &http.Server{
-		Addr:              net.JoinHostPort("", strconv.Itoa(env.AdminPort)),
-		Handler:           adminHandler(),
-		ReadHeaderTimeout: 10 * time.Second,
+// Start launches the workers, the proxy listeners and the admin server. They
+// run until ctx is cancelled; call Shutdown afterwards to wait for them.
+func (s *Server) Start(ctx context.Context) error {
+	s.workers.Start(ctx, s.cfg)
+
+	for _, l := range s.cfg.Listeners {
+		if err := s.startListener(ctx, l); err != nil {
+			return err
+		}
 	}
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.ListenAndServe() }()
-	log.Info("admin server listening", "port", env.AdminPort)
 
-	select {
-	case <-ctx.Done():
-		log.Info("shutting down")
-	case err := <-srvErr:
+	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(s.env.AdminPort)))
+	if err != nil {
 		return fmt.Errorf("admin server: %w", err)
 	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Shutdown(shutdownCtx)
-	workers.Wait()
+	s.admin = &http.Server{Handler: adminHandler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := s.admin.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			s.adminErr <- err
+		}
+	}()
+	s.log.Info("admin server listening", "port", s.env.AdminPort)
 	return nil
+}
+
+func (s *Server) startListener(ctx context.Context, l config.Listener) error {
+	srv := &proxy.Server{Name: l.Name, Router: router{s}, Tracker: s.tracker, Log: s.log}
+	var serve func(context.Context, net.Listener)
+	switch l.Type {
+	case "socks5":
+		serve = srv.ServeSOCKS5
+	default:
+		s.log.Warn("listener type is not implemented yet; skipping", "listener", l.Name, "type", l.Type)
+		return nil
+	}
+
+	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(l.Port)))
+	if err != nil {
+		return fmt.Errorf("listener %s: %w", l.Name, err)
+	}
+	s.listeners = append(s.listeners, ln)
+	go serve(ctx, ln)
+	s.log.Info("listener started", "listener", l.Name, "type", l.Type, "port", l.Port)
+	return nil
+}
+
+// Shutdown stops accepting, closes the admin server and waits for the
+// workers, which stop when the context given to Start is cancelled.
+func (s *Server) Shutdown() {
+	for _, ln := range s.listeners {
+		ln.Close()
+	}
+	if s.admin != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.admin.Shutdown(ctx)
+	}
+	s.workers.Wait()
 }
 
 // loadOrCreateConfig loads and validates the config file, writing an empty
