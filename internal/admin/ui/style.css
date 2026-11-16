@@ -147,6 +147,7 @@ legend { font-size: 0.87rem; font-weight: 600; padding: 0 0.3rem; }
   border-right: 1px solid var(--line);
 }
 .brand { padding: 0 1.3rem 1.2rem; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; }
+.brand .version { margin-left: 0.3rem; font-size: 0.8rem; font-weight: 400; color: var(--dim); }
 .side ul { flex: 1; }
 .side a {
   display: block;

@@ -1,4 +1,10 @@
+*~
+\#*\#
+.DS_Store
+.tmp-smoke.*
+.claude/
 CLAUDE.md
+ROADMAP.md
 dc/docker-compose.yaml
 dc/volumes/*
 !dc/volumes/.gitkeep

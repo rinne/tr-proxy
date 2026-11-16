@@ -31,7 +31,7 @@
 <!-- App -->
 <div class="shell" x-show="ready && authed && cfg">
   <nav class="side" aria-label="Sections">
-    <div class="brand">TR Proxy</div>
+    <div class="brand">TR Proxy <span class="version" x-show="status?.version" x-text="status?.version"></span></div>
     <ul>
       <template x-for="v in views" :key="v.id">
         <li><a :href="'#' + v.id" :aria-current="view === v.id ? 'page' : false" @click.prevent="show(v.id)" x-text="v.label"></a></li>

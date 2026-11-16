@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Formatting and vet
+        run: make check
+      - name: Go tests
+        run: make test
+      - name: Smoke test (image)
+        run: tests/smoke.sh

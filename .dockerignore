@@ -1,6 +1,13 @@
 .git
+.github
 .gitignore
 .dockerignore
+.claude
 dc
+scripts
+tests
 *.md
+LICENSE
+MIT-RINNE
 Makefile
+.tmp-smoke.*

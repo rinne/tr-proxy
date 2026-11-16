@@ -26,6 +26,8 @@ import (
 type Server struct {
 	env *Env
 	log *slog.Logger
+	// version is the build's version, shown in the status.
+	version string
 
 	// state is everything derived from the running config; applyMu
 	// serializes its replacement.
@@ -52,15 +54,17 @@ type Server struct {
 
 // Run is the supervisor's main loop. It returns when ctx is cancelled and
 // everything has shut down, or on a fatal start-up error.
-func Run(ctx context.Context, log *slog.Logger) error {
+func Run(ctx context.Context, log *slog.Logger, version string) error {
 	env, err := LoadEnv()
 	if err != nil {
 		return err
 	}
+	log.Info("tr-proxy starting", "version", version)
 	s, err := New(env, log)
 	if err != nil {
 		return err
 	}
+	s.version = version
 	if err := s.Start(ctx); err != nil {
 		s.Shutdown()
 		return err

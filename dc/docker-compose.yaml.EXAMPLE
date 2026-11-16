@@ -10,9 +10,11 @@
 
 services:
   tr-proxy:
+    # Builds from this source tree. To run the published image instead,
+    # delete the build block and use "image: timorinne/tr-proxy:latest".
     build:
       context: ..
-    image: tr-proxy:dev
+    image: tr-proxy:local
     restart: unless-stopped
     environment:
       ADMIN_USERNAME: admin

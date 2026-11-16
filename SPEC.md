@@ -540,6 +540,12 @@ used.
 
 ## 9. Deployment
 
+Released images are on Docker Hub as `timorinne/tr-proxy:<version>` and
+`:latest`, for `linux/amd64` and `linux/arm64`. A release build carries its
+version: `tr-proxy version` prints it, it is logged at start-up, and it is
+in the status as `version`. A build not made by the release script reports
+`dev`. Releases are cut with `scripts/publish.sh`; see the README.
+
 ```
 dc/
   docker-compose.yaml.EXAMPLE   committed
@@ -565,6 +571,7 @@ needs Docker only. It runs as uid 65532 with all capabilities dropped, on a
 read-only root filesystem (it writes only to the config volume and `RUN_DIR`), and
 carries its own health check (`/tr-proxy healthcheck`, which asks
 `/healthz`). On Linux hosts the config directory must be writable for that
+uid; a named volume is, because the image's `/config` belongs to that
 uid. The same goes for `RUN_DIR`: a tmpfs mounted there needs
 `uid=65532,gid=65532,mode=0700`, as in the compose example, and the
 supervisor refuses to start if it cannot write there.

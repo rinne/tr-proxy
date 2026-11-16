@@ -9,6 +9,8 @@ import (
 // Status is the live status served by GET /api/status.
 type Status struct {
 	Time time.Time `json:"time"`
+	// Version is the version of the running build.
+	Version string `json:"version,omitempty"`
 	// ConfigError is set while the server runs on an empty config because
 	// the config file could not be used at start-up.
 	ConfigError string           `json:"configError,omitempty"`
@@ -62,6 +64,7 @@ func (s *Server) status() Status {
 	cfg := s.state.Load().cfg
 	out := Status{
 		Time:        time.Now(),
+		Version:     s.version,
 		Tunnels:     []TunnelStatus{},
 		Upstreams:   []UpstreamStatus{},
 		Listeners:   []ListenerStatus{},
