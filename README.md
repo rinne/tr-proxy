@@ -185,3 +185,24 @@ code, so they need no VPN server.
 - IPv6
 - SOCKS5 upstream proxies, and reaching an upstream proxy through a tunnel
 - TLS on the admin port itself
+
+## License
+
+Copyright © 2026 Timo J. Rinne <tri@iki.fi>. All rights reserved.
+
+TR Proxy is released under the MIT License. The full text is in
+[LICENSE](LICENSE), and the same text is kept as [MIT-RINNE](MIT-RINNE).
+
+It includes and builds on other people's work, under their own licenses:
+
+| Component                                   | License      |
+|---------------------------------------------|--------------|
+| Alpine.js (vendored in `internal/admin/ui`) | MIT, see `internal/admin/ui/alpine.LICENSE.md` |
+| wireguard-go (`golang.zx2c4.com/wireguard`) | MIT          |
+| gVisor (`gvisor.dev/gvisor`)                | Apache 2.0   |
+| `github.com/coder/websocket`                | ISC          |
+| `golang.org/x/net`, `crypto`, `sys`, `time` | BSD 3-Clause |
+| `github.com/google/btree`                   | Apache 2.0   |
+
+WireGuard is a registered trademark of Jason A. Donenfeld. This project is
+not affiliated with or endorsed by the WireGuard project.
