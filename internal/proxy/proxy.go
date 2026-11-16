@@ -46,6 +46,18 @@ type Server struct {
 	Router  Router
 	Tracker *Tracker
 	Log     *slog.Logger
+	// Auth checks a client's credentials; nil means the listener is open.
+	Auth func(username, password string) bool
+}
+
+// authenticate checks credentials and counts a failure.
+func (s *Server) authenticate(client, username, password string) bool {
+	if s.Auth(username, password) {
+		return true
+	}
+	s.Tracker.AuthFailure(s.Name)
+	s.Log.Warn("proxy login rejected", "listener", s.Name, "client", client, "username", username)
+	return false
 }
 
 // connect routes and dials the destination. On success the returned

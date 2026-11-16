@@ -184,7 +184,12 @@ routing.
 - `type`: `http` (v1). The URL scheme selects plain or TLS to the proxy.
 - `auth`: `null`, `{ "type": "basic", ... }` or `{ "type": "bearer", "token": "..." }`.
   Secrets are write-only in the API.
-- Connections use `CONNECT`.
+- Every connection through an upstream is a `CONNECT` tunnel, plain-HTTP
+  requests included (`CONNECT host:80`). An upstream that refuses `CONNECT`
+  to port 80 cannot carry plain HTTP.
+- The upstream is reached directly from the container. An `https` upstream
+  is verified against the system certificate roots.
+- The destination hostname is resolved by the upstream.
 
 ### 5.4 Listeners
 
@@ -196,6 +201,10 @@ routing.
 - `auth`: per listener. `null` means open. Otherwise a list of users:
   SOCKS5 username/password (RFC 1929) or HTTP `Proxy-Authorization: Basic`.
   Passwords are write-only in the API and compared in constant time.
+  A SOCKS5 client that does not offer username/password is refused; an HTTP
+  client without valid credentials gets a 407. Rejected credentials are
+  counted per listener and logged with the client address and username; a
+  request that carries no credentials at all is not counted.
 - `default`: optional; overrides the global `default` for this listener.
 
 ### 5.5 Rules

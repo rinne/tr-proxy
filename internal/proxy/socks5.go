@@ -18,6 +18,7 @@ const (
 	socksVersion = 5
 
 	socksAuthNone         = 0x00
+	socksAuthUserPass     = 0x02
 	socksAuthNoAcceptable = 0xff
 
 	socksCmdConnect = 1
@@ -91,12 +92,21 @@ func (s *Server) socksHandshake(c net.Conn) (host string, port int, err error) {
 		return "", 0, err
 	}
 
-	if !contains(methods, socksAuthNone) {
+	method := byte(socksAuthNone)
+	if s.Auth != nil {
+		method = socksAuthUserPass
+	}
+	if !contains(methods, method) {
 		c.Write([]byte{socksVersion, socksAuthNoAcceptable})
 		return "", 0, fmt.Errorf("no acceptable auth method")
 	}
-	if _, err := c.Write([]byte{socksVersion, socksAuthNone}); err != nil {
+	if _, err := c.Write([]byte{socksVersion, method}); err != nil {
 		return "", 0, err
+	}
+	if method == socksAuthUserPass {
+		if err := s.socksUserPass(c); err != nil {
+			return "", 0, err
+		}
 	}
 
 	var req [4]byte // version, command, reserved, address type
@@ -149,6 +159,40 @@ func (s *Server) socksHandshake(c net.Conn) (host string, port int, err error) {
 		return "", 0, fmt.Errorf("empty destination")
 	}
 	return host, port, nil
+}
+
+// socksUserPass runs the username/password sub-negotiation (RFC 1929).
+func (s *Server) socksUserPass(c net.Conn) error {
+	readField := func() (string, error) {
+		var n [1]byte
+		if _, err := io.ReadFull(c, n[:]); err != nil {
+			return "", err
+		}
+		b := make([]byte, n[0])
+		_, err := io.ReadFull(c, b)
+		return string(b), err
+	}
+	var ver [1]byte
+	if _, err := io.ReadFull(c, ver[:]); err != nil {
+		return err
+	}
+	if ver[0] != 1 {
+		return fmt.Errorf("unsupported auth version %d", ver[0])
+	}
+	username, err := readField()
+	if err != nil {
+		return err
+	}
+	password, err := readField()
+	if err != nil {
+		return err
+	}
+	if !s.authenticate(c.RemoteAddr().String(), username, password) {
+		c.Write([]byte{1, 1})
+		return fmt.Errorf("bad credentials")
+	}
+	_, err = c.Write([]byte{1, 0})
+	return err
 }
 
 // socksReply sends a reply with an all-zero bound address; clients do not

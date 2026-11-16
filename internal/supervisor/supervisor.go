@@ -119,7 +119,7 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) startListener(ctx context.Context, l config.Listener) error {
-	srv := &proxy.Server{Name: l.Name, Router: proxyRouter{s}, Tracker: s.tracker, Log: s.log}
+	srv := &proxy.Server{Name: l.Name, Router: proxyRouter{s}, Tracker: s.tracker, Log: s.log, Auth: listenerAuth(l)}
 	serve := srv.ServeSOCKS5
 	if l.Type == "http" {
 		serve = srv.ServeHTTP

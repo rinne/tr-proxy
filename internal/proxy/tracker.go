@@ -26,10 +26,26 @@ type Tracker struct {
 	mu    sync.Mutex
 	next  uint64
 	conns map[uint64]*Tracked
+	// authFailures counts rejected credentials per listener.
+	authFailures map[string]uint64
 }
 
 func NewTracker() *Tracker {
-	return &Tracker{conns: map[uint64]*Tracked{}}
+	return &Tracker{conns: map[uint64]*Tracked{}, authFailures: map[string]uint64{}}
+}
+
+// AuthFailure records one rejected login on a listener.
+func (t *Tracker) AuthFailure(listener string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.authFailures[listener]++
+}
+
+// AuthFailures returns the number of rejected logins on a listener.
+func (t *Tracker) AuthFailures(listener string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.authFailures[listener]
 }
 
 // Tracked is one active connection in a Tracker.

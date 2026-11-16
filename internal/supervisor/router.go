@@ -1,6 +1,8 @@
 package supervisor
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"strings"
 
@@ -35,7 +37,36 @@ func (s *Server) newState(cfg *config.Config) (*state, error) {
 		st.dialers[w.Name] = egress.Worker{Socket: s.workers.SocketPath(w.Name)}
 		st.tunnels[w.Name] = true
 	}
+	for _, u := range cfg.Upstreams {
+		d, err := egress.NewHTTPProxy(u)
+		if err != nil {
+			return nil, err
+		}
+		st.dialers[u.Name] = d
+	}
 	return st, nil
+}
+
+// listenerAuth returns the credential check for a listener, or nil if the
+// listener is open. Every configured user is compared, in constant time, so
+// that the answer's timing does not depend on which user matched.
+func listenerAuth(l config.Listener) func(username, password string) bool {
+	if l.Auth == nil {
+		return nil
+	}
+	type cred struct{ user, pass [sha256.Size]byte }
+	creds := make([]cred, len(l.Auth.Users))
+	for i, u := range l.Auth.Users {
+		creds[i] = cred{sha256.Sum256([]byte(u.Username)), sha256.Sum256([]byte(u.Password))}
+	}
+	return func(username, password string) bool {
+		user, pass := sha256.Sum256([]byte(username)), sha256.Sum256([]byte(password))
+		ok := 0
+		for _, c := range creds {
+			ok |= subtle.ConstantTimeCompare(user[:], c.user[:]) & subtle.ConstantTimeCompare(pass[:], c.pass[:])
+		}
+		return ok == 1
+	}
 }
 
 // routeResult is a routing decision with the reason, for the proxy and for

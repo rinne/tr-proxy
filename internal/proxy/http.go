@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +56,11 @@ func (s *Server) ServeHTTP(ctx context.Context, ln net.Listener) {
 
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.Auth != nil && !s.httpAuthorized(r) {
+				w.Header().Set("Proxy-Authenticate", `Basic realm="tr-proxy"`)
+				http.Error(w, "Proxy authentication required.", http.StatusProxyAuthRequired)
+				return
+			}
 			switch {
 			case r.Method == http.MethodConnect:
 				s.handleConnect(ctx, w, r)
@@ -71,6 +78,22 @@ func (s *Server) ServeHTTP(ctx context.Context, ln net.Listener) {
 	}
 	srv.Serve(ln)
 	transport.CloseIdleConnections()
+}
+
+// httpAuthorized checks the Proxy-Authorization header. A request without
+// credentials is not counted as a failed login: clients routinely ask first
+// and authenticate on the 407.
+func (s *Server) httpAuthorized(r *http.Request) bool {
+	scheme, cred, _ := strings.Cut(r.Header.Get("Proxy-Authorization"), " ")
+	if !strings.EqualFold(scheme, "Basic") || cred == "" {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cred))
+	if err != nil {
+		return false
+	}
+	username, password, ok := strings.Cut(string(raw), ":")
+	return ok && s.authenticate(r.RemoteAddr, username, password)
 }
 
 func (s *Server) handleConnect(ctx context.Context, w http.ResponseWriter, r *http.Request) {
