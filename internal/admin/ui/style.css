@@ -210,6 +210,8 @@ th { font-size: 0.83rem; font-weight: 600; color: var(--dim); white-space: nowra
 td.actions { text-align: right; white-space: nowrap; }
 td code { word-break: break-all; }
 
+tr.is-disabled td:not(.actions) { color: var(--dim); }
+
 /* --- states --- */
 
 .pill {

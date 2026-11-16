@@ -106,7 +106,9 @@
         <tbody>
           <template x-for="l in status?.listeners || []" :key="l.name">
             <tr>
-              <td><span x-text="l.name"></span> <span class="pill" data-state="down" x-show="l.error" x-text="'not listening: ' + l.error"></span></td>
+              <td><span x-text="l.name"></span>
+                <span class="pill" data-state="down" x-show="l.error" x-text="'not listening: ' + l.error"></span>
+                <span class="pill" x-show="l.disabled">disabled</span></td>
               <td x-text="l.type === 'socks5' ? 'SOCKS5' : 'HTTP'"></td>
               <td class="num" x-text="l.port"></td>
               <td x-text="l.auth ? 'required' : 'open'"></td>
@@ -235,16 +237,18 @@
       </div>
       <p class="empty" x-show="!cfg?.listeners.length">No listeners. Add a SOCKS5 or HTTP listener for clients to connect to.</p>
       <table x-show="cfg?.listeners.length">
-        <thead><tr><th>Name</th><th>Type</th><th class="num">Port</th><th>Login</th><th>Default route</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>State</th><th>Type</th><th class="num">Port</th><th>Login</th><th>Default route</th><th></th></tr></thead>
         <tbody>
           <template x-for="l in cfg?.listeners || []" :key="l.name">
-            <tr>
+            <tr :class="l.disabled ? 'is-disabled' : ''">
               <td x-text="l.name"></td>
+              <td><span class="pill" :data-state="listenerState(l).state" x-text="listenerState(l).text"></span></td>
               <td x-text="l.type === 'socks5' ? 'SOCKS5' : 'HTTP'"></td>
               <td class="num" x-text="l.port"></td>
               <td x-text="l.auth ? l.auth.users.map(u => u.username).join(', ') : 'open'" :class="l.auth ? '' : 'dim'"></td>
               <td x-text="l.default || 'same as global'" :class="l.default ? '' : 'dim'"></td>
               <td class="actions">
+                <button class="quiet" type="button" @click="setListenerDisabled(l, !l.disabled)" x-text="l.disabled ? 'Enable' : 'Disable'"></button>
                 <button class="quiet" type="button" @click="edit('listeners', l)">Edit</button>
                 <button class="quiet danger" type="button" @click="remove('listeners', l.name)">Delete</button>
               </td>

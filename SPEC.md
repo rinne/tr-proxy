@@ -129,7 +129,8 @@ as a whole.
       "type": "http",
       "port": 1081,
       "auth": null,
-      "default": "Office1"
+      "default": "Office1",
+      "disabled": false
     }
   ],
   "rules": [
@@ -207,6 +208,11 @@ routing.
   counted per listener and logged with the client address and username; a
   request that carries no credentials at all is not counted.
 - `default`: optional; overrides the global `default` for this listener.
+- `disabled`: optional. A disabled listener stays in the config, users and
+  all, but its port is not opened. Disabling a running listener closes the
+  port; connections it already accepted stay open. Its port stays reserved:
+  no other listener may use it. The setting is part of the config, so it
+  survives a restart.
 
 ### 5.5 Rules
 
@@ -290,6 +296,8 @@ Configuration:
 | `DELETE /api/<collection>/{name}`    | Remove an entry                          |
 | `POST /api/rules/order`              | Reorder: body is the list of all rule names |
 | `POST /api/keys/generate`            | Body `{"name"}`: create a key pair       |
+| `POST /api/listeners/{name}/disable` | Close the listener's port, keep its entry |
+| `POST /api/listeners/{name}/enable`  | Open it again                            |
 
 `<collection>` is `keys`, `wireguard`, `upstreams`, `listeners` or `rules`.
 
@@ -349,8 +357,9 @@ The stream is closed when the session ends.
   last heartbeat, last handshake, rx/tx bytes, the endpoint and the probe
   (type, ok, latency in ms, consecutive failures, error).
 - `upstreams`: reachability, last error and time of the last check.
-- `listeners`: type, port, whether auth is on, active connections, rejected
-  logins, and the error if the port could not be opened.
+- `listeners`: type, port, whether auth is on, whether it is disabled,
+  active connections, rejected logins, and the error if the port could not
+  be opened.
 - `connections`: listener, client, destination, matched rule, egress, bytes
   up and down, start time.
 - `events`: the most recent 200 events (tunnel state changes and restarts,
@@ -370,7 +379,8 @@ exists; all data comes from the API.
   event log, kept live over the WebSocket.
 - Tunnels: WireGuard connections and local keys. Keys are generated or
   pasted, and their public key can be copied; they are not edited.
-- Upstream proxies, Listeners (with their users) and Rules (ordering, the
+- Upstream proxies, Listeners (with their users, and a button to disable
+  or enable each one) and Rules (ordering, the
   global default route, and a form that shows how a destination would be
   routed).
 - Config as JSON: the whole config in a text box, saved through
@@ -396,8 +406,9 @@ The stream is closed when the session ends.
   last heartbeat, last handshake, rx/tx bytes, the endpoint and the probe
   (type, ok, latency in ms, consecutive failures, error).
 - `upstreams`: reachability, last error and time of the last check.
-- `listeners`: type, port, whether auth is on, active connections, rejected
-  logins, and the error if the port could not be opened.
+- `listeners`: type, port, whether auth is on, whether it is disabled,
+  active connections, rejected logins, and the error if the port could not
+  be opened.
 - `connections`: listener, client, destination, matched rule, egress, bytes
   up and down, start time.
 - `events`: the most recent 200 events (tunnel state changes and restarts,

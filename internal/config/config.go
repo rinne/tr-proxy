@@ -137,6 +137,8 @@ type Listener struct {
 	Port    int           `json:"port"`
 	Auth    *ListenerAuth `json:"auth,omitempty"`
 	Default string        `json:"default,omitempty"`
+	// Disabled keeps the listener in the config without opening its port.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 type ListenerAuth struct {

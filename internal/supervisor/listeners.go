@@ -33,9 +33,9 @@ func socketConfig(l config.Listener) config.Listener {
 }
 
 // syncListeners makes the running listeners match want: listeners that are
-// gone or changed are closed, missing ones (and ones that failed to open
-// before) are started, the rest keep running. Connections already accepted
-// are not interrupted.
+// gone, disabled or changed are closed, missing ones (and ones that failed
+// to open before) are started, the rest keep running. Connections already
+// accepted are not interrupted.
 func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 	ls := &s.listeners
 	ls.mu.Lock()
@@ -44,9 +44,13 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 		ls.active = map[string]*activeListener{}
 	}
 
+	// A disabled listener is treated like one that is not there: it is
+	// closed if it runs and not started if it does not.
 	wanted := map[string]config.Listener{}
 	for _, l := range want {
-		wanted[l.Name] = l
+		if !l.Disabled {
+			wanted[l.Name] = l
+		}
 	}
 	for name, a := range ls.active {
 		l, ok := wanted[name]
@@ -62,7 +66,7 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 	}
 
 	for _, l := range want {
-		if _, ok := ls.active[l.Name]; ok {
+		if _, ok := ls.active[l.Name]; ok || l.Disabled {
 			continue
 		}
 		a := &activeListener{cfg: l}

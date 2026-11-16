@@ -31,6 +31,7 @@ type ListenerStatus struct {
 	Type         string `json:"type"`
 	Port         int    `json:"port"`
 	Auth         bool   `json:"auth"`
+	Disabled     bool   `json:"disabled"`
 	Connections  int    `json:"connections"`
 	AuthFailures uint64 `json:"authFailures"`
 	// Error is set when the listener could not be started.
@@ -84,6 +85,7 @@ func (s *Server) status() Status {
 			Type:         l.Type,
 			Port:         l.Port,
 			Auth:         l.Auth != nil,
+			Disabled:     l.Disabled,
 			Connections:  s.tracker.Count(l.Name),
 			AuthFailures: s.tracker.AuthFailures(l.Name),
 			Error:        errs[l.Name],

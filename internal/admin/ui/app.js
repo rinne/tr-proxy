@@ -129,9 +129,10 @@ const forms = {
 
   listeners: {
     title: 'listener',
-    blank: () => ({ name: '', type: 'socks5', port: '', default: '', users: [] }),
+    blank: () => ({ name: '', type: 'socks5', port: '', default: '', users: [], disabled: false }),
     fromConfig: (l) => ({
       name: l.name,
+      disabled: !!l.disabled,
       type: l.type,
       port: l.port,
       default: l.default || '',
@@ -140,6 +141,7 @@ const forms = {
     toConfig: (f) => {
       const out = { name: f.name.trim(), type: f.type, port: intOrNull(f.port) ?? 0 };
       if (f.default) out.default = f.default;
+      if (f.disabled) out.disabled = true;
       if (f.users.length) out.auth = { users: f.users.map((u) => ({ username: u.username.trim(), password: u.password })) };
       return out;
     },
@@ -407,6 +409,25 @@ function app() {
       } catch (e) {
         alert(`${name} was not deleted.\n\n${[e.message, ...e.problems].join('\n')}`);
       }
+    },
+
+    // --- listeners ---
+
+    async setListenerDisabled(l, disabled) {
+      try {
+        await this.api('POST', `/api/listeners/${encodeURIComponent(l.name)}/${disabled ? 'disable' : 'enable'}`);
+        await this.loadConfig();
+        this.flash(disabled ? `Disabled ${l.name}. Open connections stay open.` : `Enabled ${l.name}.`);
+      } catch (e) {
+        alert([e.message, ...(e.problems || [])].join('\n'));
+      }
+    },
+
+    listenerState(l) {
+      if (l.disabled) return { state: 'starting', text: 'disabled' };
+      const st = this.status?.listeners.find((x) => x.name === l.name);
+      if (st?.error) return { state: 'down', text: 'not listening' };
+      return { state: 'up', text: 'listening' };
     },
 
     // --- tunnels ---

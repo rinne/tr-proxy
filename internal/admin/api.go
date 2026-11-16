@@ -93,6 +93,8 @@ func NewHandler(b Backend, creds Credentials, log *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/keys/generate", a.protect(a.generateKey))
 	mux.HandleFunc("POST /api/wireguard/{name}/restart", a.protect(a.restartTunnel))
 	mux.HandleFunc("POST /api/rules/order", a.protect(a.orderRules))
+	mux.HandleFunc("POST /api/listeners/{name}/disable", a.protect(a.setListenerDisabled(true)))
+	mux.HandleFunc("POST /api/listeners/{name}/enable", a.protect(a.setListenerDisabled(false)))
 
 	register(mux, a, "keys",
 		func(c *config.Config) *[]config.Key { return &c.Keys },
@@ -337,6 +339,32 @@ func (a *api) orderRules(w http.ResponseWriter, r *http.Request) {
 	cfg.Rules = ordered
 	if a.apply(w, cfg) {
 		writeJSON(w, http.StatusOK, config.Redact(a.b.Config()).Rules)
+	}
+}
+
+// setListenerDisabled closes a listener's port without removing it from
+// the config, or opens it again.
+func (a *api) setListenerDisabled(disabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		cfg := a.b.Config()
+		for i := range cfg.Listeners {
+			if cfg.Listeners[i].Name != name {
+				continue
+			}
+			cfg.Listeners[i].Disabled = disabled
+			if a.apply(w, cfg) {
+				for _, l := range config.Redact(a.b.Config()).Listeners {
+					if l.Name == name {
+						writeJSON(w, http.StatusOK, l)
+					}
+				}
+			}
+			return
+		}
+		writeError(w, http.StatusNotFound, "no such listener")
 	}
 }
 
