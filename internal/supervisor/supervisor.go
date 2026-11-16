@@ -1,7 +1,6 @@
 // Package supervisor is the container's main process: it owns the config,
 // runs the admin HTTP server and keeps one worker per WireGuard connection
-// alive. Proxy listeners, the rule engine, the admin API and the UI are not
-// here yet.
+// alive.
 package supervisor
 
 import (
@@ -37,7 +36,10 @@ func Run(ctx context.Context, log *slog.Logger) error {
 		"listeners", len(cfg.Listeners),
 		"rules", len(cfg.Rules))
 
-	workers, err := NewWorkers(log)
+	if err := os.MkdirAll(env.RunDir, 0o700); err != nil {
+		return fmt.Errorf("run directory: %w", err)
+	}
+	workers, err := NewWorkers(log, env.RunDir)
 	if err != nil {
 		return err
 	}

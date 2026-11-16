@@ -19,6 +19,8 @@ type Env struct {
 	AdminPort       int
 	ProxyPorts      config.PortRange
 	ConfigPath      string
+	// RunDir holds the workers' unix sockets.
+	RunDir string
 }
 
 func getenv(key, fallback string) string {
@@ -43,6 +45,7 @@ func LoadEnv() (*Env, error) {
 		AdminUsername: os.Getenv("ADMIN_USERNAME"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
 		ConfigPath:    getenv("CONFIG_PATH", "/config/config.json"),
+		RunDir:        getenv("RUN_DIR", "/run/tr-proxy"),
 	}
 	if e.AdminUsername == "" || e.AdminPassword == "" {
 		return nil, fmt.Errorf("ADMIN_USERNAME and ADMIN_PASSWORD must be set")

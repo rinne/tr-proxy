@@ -67,6 +67,16 @@ environment. Status reports are JSON lines on the worker's stdout. The
 supervisor keeps stdin open for the worker's whole life, and a worker exits
 when stdin closes, so workers never outlive the supervisor.
 
+To open a connection through a tunnel the supervisor connects to the worker's
+unix socket and sends one JSON line, `{"host": "...", "port": N}`. The worker
+answers with one JSON line, `{}` on success or `{"error": "..."}`, and after
+a success the socket carries the raw byte stream to the destination. One
+socket connection is one proxied connection.
+
+A worker reports `starting` until the first WireGuard handshake, `up` while
+the last handshake is younger than three minutes, and `degraded` after that.
+The supervisor adds `restarting` while a dead worker waits for its backoff.
+
 Separate processes are for fault isolation: a hung or crashed tunnel is killed
 and restarted without touching the others.
 
@@ -316,6 +326,8 @@ Environment:
 | `ADMIN_TOTP_SECRET` | optional, base32                                |
 | `ADMIN_PORT`        | admin UI/API port, default 8080                 |
 | `PROXY_PORT_RANGE`  | ports listeners may use, default `1080-1099`    |
+| `CONFIG_PATH`       | config file, default `/config/config.json`      |
+| `RUN_DIR`           | worker sockets, default `/run/tr-proxy`         |
 
 The image is built entirely in containers (multi-stage Dockerfile); the host
 needs Docker only. It runs as uid 65532 with all capabilities dropped and

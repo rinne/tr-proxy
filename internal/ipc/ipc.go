@@ -5,6 +5,9 @@
 // outlive the supervisor. The worker writes Status JSON lines to stdout; each
 // line also counts as a heartbeat. Secrets travel over stdin only, never in
 // argv or the environment.
+//
+// Connections through the tunnel are requested over the worker's unix
+// socket; see dial.go.
 package ipc
 
 import (
@@ -25,18 +28,25 @@ const (
 type Spec struct {
 	Connection config.WireGuard `json:"connection"`
 	SecretKey  string           `json:"secretKey"`
+	// Socket is the unix socket path the worker serves dial requests on.
+	Socket string `json:"socket"`
 }
 
 // Worker states.
 const (
-	StateStarting = "starting"
-	StateUp       = "up"
-	StateDegraded = "degraded"
-	StateDown     = "down"
+	StateStarting   = "starting"   // no handshake yet
+	StateUp         = "up"         // handshake is fresh
+	StateDegraded   = "degraded"   // handshake is stale or probes are failing
+	StateDown       = "down"       // not running, or declared dead
+	StateRestarting = "restarting" // waiting to be started again
 )
 
 // Status is one report from a worker.
 type Status struct {
-	State     string `json:"state"`
-	LastError string `json:"lastError,omitempty"`
+	State string `json:"state"`
+	// LastHandshake is unix seconds; 0 means there has been none.
+	LastHandshake int64  `json:"lastHandshake,omitempty"`
+	Rx            uint64 `json:"rx"`
+	Tx            uint64 `json:"tx"`
+	LastError     string `json:"lastError,omitempty"`
 }

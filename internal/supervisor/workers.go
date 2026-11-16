@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -34,25 +35,35 @@ type WorkerStatus struct {
 	Restarts      int       `json:"restarts"`
 	LastError     string    `json:"lastError,omitempty"`
 	LastHeartbeat time.Time `json:"lastHeartbeat,omitzero"`
+	LastHandshake time.Time `json:"lastHandshake,omitzero"`
+	Rx            uint64    `json:"rx"`
+	Tx            uint64    `json:"tx"`
 }
 
 // Workers runs one worker process per WireGuard connection and restarts any
 // that exit or stop sending heartbeats.
 type Workers struct {
-	exe string
-	log *slog.Logger
-	wg  sync.WaitGroup
+	exe    string
+	runDir string
+	log    *slog.Logger
+	wg     sync.WaitGroup
 
 	mu     sync.Mutex
 	status map[string]*WorkerStatus
 }
 
-func NewWorkers(log *slog.Logger) (*Workers, error) {
+// NewWorkers prepares a worker set whose dial sockets live in runDir.
+func NewWorkers(log *slog.Logger, runDir string) (*Workers, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	return &Workers{exe: exe, log: log, status: map[string]*WorkerStatus{}}, nil
+	return &Workers{exe: exe, runDir: runDir, log: log, status: map[string]*WorkerStatus{}}, nil
+}
+
+// SocketPath is where the named connection's worker serves dial requests.
+func (w *Workers) SocketPath(name string) string {
+	return filepath.Join(w.runDir, name+".sock")
 }
 
 // Start launches a supervised worker for every connection in the config. The
@@ -60,7 +71,7 @@ func NewWorkers(log *slog.Logger) (*Workers, error) {
 func (w *Workers) Start(ctx context.Context, c *config.Config) {
 	for _, conn := range c.WireGuard {
 		key, _ := c.KeyByName(conn.LocalKey) // presence is checked by Validate
-		spec := ipc.Spec{Connection: conn, SecretKey: key.SecretKey}
+		spec := ipc.Spec{Connection: conn, SecretKey: key.SecretKey, Socket: w.SocketPath(conn.Name)}
 
 		w.mu.Lock()
 		w.status[conn.Name] = &WorkerStatus{Name: conn.Name, State: ipc.StateStarting}
@@ -110,7 +121,7 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 			backoff = backoffMin
 		}
 		w.update(name, func(s *WorkerStatus) {
-			s.State = ipc.StateDown
+			s.State = ipc.StateRestarting
 			s.PID = 0
 			s.Restarts++
 			s.LastError = fmt.Sprint(err)
@@ -181,6 +192,11 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 			s.State = st.State
 			s.LastError = st.LastError
 			s.LastHeartbeat = time.Now()
+			s.LastHandshake = time.Time{}
+			if st.LastHandshake > 0 {
+				s.LastHandshake = time.Unix(st.LastHandshake, 0)
+			}
+			s.Rx, s.Tx = st.Rx, st.Tx
 		})
 	}
 
