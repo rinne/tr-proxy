@@ -1,6 +1,7 @@
 # TR Proxy — Specification
 
-Status: draft, pre-implementation. Config schema version: 1.
+Status: stages 1-6 implemented (everything except the web UI, the WebSocket and
+the hardening items). Config schema version: 1.
 
 ## 1. Purpose
 
@@ -239,31 +240,92 @@ HTTP proxies, the container resolver for `direct`.
 - Credentials come from the environment: `ADMIN_USERNAME`, `ADMIN_PASSWORD`,
   optional `ADMIN_TOTP_SECRET` (base32). The process refuses to start without
   username and password.
-- Login form: username, password, and the TOTP code when a secret is set.
-- Session cookie: `HttpOnly`, `SameSite=Strict`; sessions are in memory and
-  are lost on restart.
-- Login attempts are rate limited. A TOTP code is accepted once.
-- Origin is checked on every mutating request and on the WebSocket upgrade.
+- `POST /api/login` takes `{"username", "password", "totp"}` and sets the
+  session cookie `tr_proxy_session`: `HttpOnly`, `SameSite=Strict`, and
+  `Secure` when the request arrived over TLS or carries
+  `X-Forwarded-Proto: https`.
+- Sessions live in memory for twelve hours and are lost on restart.
+- TOTP is RFC 6238 (SHA-1, six digits, 30-second steps). The code of the
+  current step or a neighbouring one is accepted, and each code works once.
+  A wrong password does not use a code up.
+- Ten failed logins within a minute lock the login for everyone until the
+  minute has passed (HTTP 429). The limit is global, not per client, because
+  behind Docker's port publishing clients share a source address.
+- Requests that change something, and the login itself, are refused with 403
+  when a browser sent them from another origin (`Origin` host differs from
+  `Host`, or `Sec-Fetch-Site` says cross-site). Requests without browser
+  headers, such as scripts, pass this check and still need a session.
 - `/healthz` is unauthenticated and returns process health only (for Docker
   health checks and load balancers).
+- Login attempts are written to the event log.
 
 The admin port speaks plain HTTP. When it is exposed beyond localhost it must
 sit behind a TLS-terminating reverse proxy.
 
 ### 6.2 REST
 
-All under `/api`, JSON, session required.
+All under `/api`, JSON in and out. Unknown fields in a request body are an
+error. Everything except the three session endpoints needs a session and
+answers 401 without one.
 
-- `POST /api/login`, `POST /api/logout`
-- `GET /api/config`, `PUT /api/config` (whole config, secrets redacted on
-  read; a redacted secret in a write means "keep the stored value")
-- CRUD per collection: `/api/keys`, `/api/wireguard`, `/api/upstreams`,
-  `/api/listeners`, `/api/rules` (including reordering)
-- `POST /api/keys/generate`
-- `POST /api/wireguard/{name}/restart`
-- `GET /api/status`
-- `POST /api/test-route` — given listener and destination, returns the rule
-  and egress that would be used
+Session:
+
+| Request             | Answer                                             |
+|---------------------|----------------------------------------------------|
+| `GET /api/session`  | `{"authenticated": bool, "totp": bool}`; `totp` says whether login needs a code |
+| `POST /api/login`   | 200 and the cookie, 401 on bad credentials, 429 when locked |
+| `POST /api/logout`  | Ends the session                                   |
+
+Configuration:
+
+| Request                              | Effect                                   |
+|--------------------------------------|------------------------------------------|
+| `GET /api/config`                    | The whole config, secrets redacted       |
+| `PUT /api/config`                    | Replace the whole config                 |
+| `GET /api/<collection>`              | List                                     |
+| `POST /api/<collection>`             | Add an entry; 409 if the name exists     |
+| `GET /api/<collection>/{name}`       | One entry                                |
+| `PUT /api/<collection>/{name}`       | Replace an entry (it may be renamed)     |
+| `DELETE /api/<collection>/{name}`    | Remove an entry                          |
+| `POST /api/rules/order`              | Reorder: body is the list of all rule names |
+| `POST /api/keys/generate`            | Body `{"name"}`: create a key pair       |
+
+`<collection>` is `keys`, `wireguard`, `upstreams`, `listeners` or `rules`.
+
+- Every change, whole-config or single entry, goes the same way: the
+  resulting config is validated as a whole, saved atomically, then applied.
+  A config that fails validation is refused with 400 and
+  `{"error", "problems": [...]}`, and nothing changes. Removing something
+  that is still referenced fails this way.
+- Secrets are never returned. In answers they read `<redacted>`, and each
+  key carries a derived `publicKey`. A write that sends `<redacted>` back
+  keeps the stored value, found by name: the key's name, the connection's
+  name (preshared key), the upstream's name (password, token), or the
+  listener's name plus username. A placeholder with nothing stored behind
+  it, for instance after a rename, is refused.
+- `publicKey` is ignored on input and not stored.
+
+Applying a config touches only what changed:
+
+- A worker is restarted when its connection or its key changed, stopped when
+  the connection was removed and started when it is new. Other tunnels keep
+  running.
+- A listener is reopened when its type, port or users changed. Connections
+  it already accepted continue.
+- Rules, defaults and upstreams take effect for new connections at once.
+
+Actions and status:
+
+| Request                               | Effect                                  |
+|---------------------------------------|-----------------------------------------|
+| `POST /api/wireguard/{name}/restart`  | Restart one tunnel's worker             |
+| `POST /api/test-route`                | Body `{"listener", "host"}`: answers `{"rule", "via", "egress", "error"}` for how that destination would be routed right now |
+| `GET /api/status`                     | Live status, see 6.4                    |
+
+If the config file exists at start-up but cannot be parsed or fails
+validation, the supervisor does not exit: it runs on an empty config, leaves
+the file untouched, and reports the problem as `configError` in the status
+until a config is saved through the API.
 
 ### 6.3 WebSocket
 
@@ -276,13 +338,20 @@ All under `/api`, JSON, session required.
 
 ### 6.4 Status view
 
-- Per tunnel: state (starting, up, degraded, down, restarting), last handshake
-  age, rx/tx bytes, probe latency, restart count, last error.
-- Per upstream: reachability, last error.
-- Per listener: active connections, auth failures.
-- Active connections: listener, client, destination, matched rule, egress,
-  bytes, age.
-- Recent events, held in memory in a bounded ring.
+`GET /api/status` returns:
+
+- `tunnels`: per tunnel the state, worker pid, restart count, last error,
+  last heartbeat, last handshake, rx/tx bytes, the endpoint and the probe
+  (type, ok, latency in ms, consecutive failures, error).
+- `upstreams`: reachability, last error and time of the last check.
+- `listeners`: type, port, whether auth is on, active connections, rejected
+  logins, and the error if the port could not be opened.
+- `connections`: listener, client, destination, matched rule, egress, bytes
+  up and down, start time.
+- `events`: the most recent 200 events (tunnel state changes and restarts,
+  listener failures, rejected proxy logins, admin logins, config changes),
+  held in memory.
+- `configError`, if the config file was not usable at start-up.
 
 ## 7. Request flow
 
@@ -391,6 +460,9 @@ deployment choice and should go together with listener auth.
 - Secrets never leave through the API or the WebSocket.
 - Listener auth is per listener and is the access control for the proxy
   itself; open listeners are intended for localhost-only publishing.
+- With `direct` as an egress, proxy clients can reach whatever the container
+  can, its own loopback and Docker network included. The admin API is still
+  behind its login.
 
 ## 11. Backlog (not in v1)
 

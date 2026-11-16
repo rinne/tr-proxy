@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"tr-proxy/internal/admin"
 	"tr-proxy/internal/config"
 	"tr-proxy/internal/egress"
 	"tr-proxy/internal/proxy"
@@ -22,14 +24,23 @@ import (
 
 // Server is the supervisor's state.
 type Server struct {
-	env   *Env
-	log   *slog.Logger
-	state atomic.Pointer[state]
+	env *Env
+	log *slog.Logger
 
+	// state is everything derived from the running config; applyMu
+	// serializes its replacement.
+	state   atomic.Pointer[state]
+	applyMu sync.Mutex
+	// configError is set when the config file could not be used at start-up
+	// and the server runs on an empty config instead.
+	configError atomic.Pointer[string]
+
+	ctx       context.Context
 	workers   *Workers
 	upstreams *upstreamMonitor
 	tracker   *proxy.Tracker
-	listeners []net.Listener
+	listeners listeners
+	events    events
 	admin     *http.Server
 	adminErr  chan error
 }
@@ -61,7 +72,24 @@ func Run(ctx context.Context, log *slog.Logger) error {
 
 // New loads the config and prepares a server; nothing runs until Start.
 func New(env *Env, log *slog.Logger) (*Server, error) {
-	cfg, err := loadOrCreateConfig(env, log)
+	s := &Server{
+		env:       env,
+		log:       log,
+		upstreams: newUpstreamMonitor(),
+		tracker:   proxy.NewTracker(),
+		adminErr:  make(chan error, 1),
+	}
+
+	if err := os.MkdirAll(env.RunDir, 0o700); err != nil {
+		return nil, fmt.Errorf("run directory: %w", err)
+	}
+	workers, err := NewWorkers(log, env.RunDir, s.events.Add)
+	if err != nil {
+		return nil, err
+	}
+	s.workers = workers
+
+	cfg, err := s.loadOrCreateConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -71,22 +99,6 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 		"upstreams", len(cfg.Upstreams),
 		"listeners", len(cfg.Listeners),
 		"rules", len(cfg.Rules))
-
-	if err := os.MkdirAll(env.RunDir, 0o700); err != nil {
-		return nil, fmt.Errorf("run directory: %w", err)
-	}
-	workers, err := NewWorkers(log, env.RunDir)
-	if err != nil {
-		return nil, err
-	}
-	s := &Server{
-		env:       env,
-		log:       log,
-		workers:   workers,
-		upstreams: newUpstreamMonitor(),
-		tracker:   proxy.NewTracker(),
-		adminErr:  make(chan error, 1),
-	}
 	st, err := s.newState(cfg)
 	if err != nil {
 		return nil, err
@@ -95,24 +107,59 @@ func New(env *Env, log *slog.Logger) (*Server, error) {
 	return s, nil
 }
 
+// loadOrCreateConfig loads and validates the config file, writing an empty
+// one on first start. A file that exists but cannot be used does not stop
+// the server: it starts on an empty config, leaves the file alone and
+// reports the problem in the status, so that it can be fixed through the
+// admin API.
+func (s *Server) loadOrCreateConfig() (*config.Config, error) {
+	path := s.env.ConfigPath
+	cfg, err := config.Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		cfg = config.New()
+		if err := config.Save(path, cfg); err != nil {
+			return nil, fmt.Errorf("create %s: %w", path, err)
+		}
+		s.log.Info("no config found; wrote an empty one", "path", path)
+		return cfg, nil
+	}
+	if err == nil {
+		err = config.Validate(cfg, s.env.ProxyPorts)
+	}
+	if err != nil {
+		msg := fmt.Sprintf("%s was not used: %v", path, err)
+		s.configError.Store(&msg)
+		s.log.Error("config file is not usable; running on an empty config until it is replaced", "path", path, "err", err)
+		s.events.Add("config", msg)
+		return config.New(), nil
+	}
+	return cfg, nil
+}
+
 // Start launches the workers, the proxy listeners and the admin server. They
 // run until ctx is cancelled; call Shutdown afterwards to wait for them.
 func (s *Server) Start(ctx context.Context) error {
+	s.ctx = ctx
 	cfg := s.state.Load().cfg
-	s.workers.Start(ctx, cfg)
-	go s.upstreams.run(ctx, func() map[string]*egress.HTTPProxy { return s.state.Load().upstreams })
 
-	for _, l := range cfg.Listeners {
-		if err := s.startListener(ctx, l); err != nil {
-			return err
-		}
-	}
+	s.workers.Start(ctx)
+	s.workers.Sync(s.workers.Specs(cfg))
+	go s.upstreams.run(ctx, func() map[string]*egress.HTTPProxy { return s.state.Load().upstreams })
+	s.syncListeners(ctx, cfg.Listeners)
 
 	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(s.env.AdminPort)))
 	if err != nil {
 		return fmt.Errorf("admin server: %w", err)
 	}
-	s.admin = &http.Server{Handler: adminHandler(), ReadHeaderTimeout: 10 * time.Second}
+	creds := admin.Credentials{
+		Username:   s.env.AdminUsername,
+		Password:   s.env.AdminPassword,
+		TOTPSecret: s.env.AdminTOTPSecret,
+	}
+	s.admin = &http.Server{
+		Handler:           admin.NewHandler(s, creds, s.log),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
 		if err := s.admin.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 			s.adminErr <- err
@@ -122,29 +169,10 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) startListener(ctx context.Context, l config.Listener) error {
-	srv := &proxy.Server{Name: l.Name, Router: proxyRouter{s}, Tracker: s.tracker, Log: s.log, Auth: listenerAuth(l)}
-	serve := srv.ServeSOCKS5
-	if l.Type == "http" {
-		serve = srv.ServeHTTP
-	}
-
-	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(l.Port)))
-	if err != nil {
-		return fmt.Errorf("listener %s: %w", l.Name, err)
-	}
-	s.listeners = append(s.listeners, ln)
-	go serve(ctx, ln)
-	s.log.Info("listener started", "listener", l.Name, "type", l.Type, "port", l.Port)
-	return nil
-}
-
 // Shutdown stops accepting, closes the admin server and waits for the
 // workers, which stop when the context given to Start is cancelled.
 func (s *Server) Shutdown() {
-	for _, ln := range s.listeners {
-		ln.Close()
-	}
+	s.closeListeners()
 	if s.admin != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -153,36 +181,54 @@ func (s *Server) Shutdown() {
 	s.workers.Wait()
 }
 
-// loadOrCreateConfig loads and validates the config file, writing an empty
-// one on first start.
-func loadOrCreateConfig(env *Env, log *slog.Logger) (*config.Config, error) {
-	cfg, err := config.Load(env.ConfigPath)
-	if errors.Is(err, os.ErrNotExist) {
-		cfg = config.New()
-		if err := config.Save(env.ConfigPath, cfg); err != nil {
-			return nil, fmt.Errorf("create %s: %w", env.ConfigPath, err)
-		}
-		log.Info("no config found; wrote an empty one", "path", env.ConfigPath)
-		return cfg, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("load %s: %w", env.ConfigPath, err)
-	}
-	if err := config.Validate(cfg, env.ProxyPorts); err != nil {
-		return nil, fmt.Errorf("invalid config %s:\n%w", env.ConfigPath, err)
-	}
-	return cfg, nil
+// --- admin.Backend ---
+
+// Config returns a copy of the running config.
+func (s *Server) Config() *config.Config {
+	return s.state.Load().cfg.Clone()
 }
 
-func adminHandler() http.Handler {
-	mux := http.NewServeMux()
-	// Unauthenticated; process health only.
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
-	return mux
+// Apply validates cfg, saves it and switches to it. Only what changed is
+// touched: workers whose connection (or key) changed are restarted,
+// listeners whose port, type or users changed are reopened, and rules,
+// defaults and upstreams take effect for new connections at once. Existing
+// proxied connections are left alone unless their tunnel is restarted.
+func (s *Server) Apply(cfg *config.Config) error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := config.Validate(cfg, s.env.ProxyPorts); err != nil {
+		return &admin.InvalidError{Err: err}
+	}
+	st, err := s.newState(cfg)
+	if err != nil {
+		return &admin.InvalidError{Err: err}
+	}
+	if err := config.Save(s.env.ConfigPath, cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	s.state.Store(st)
+	s.configError.Store(nil)
+
+	s.workers.Sync(s.workers.Specs(cfg))
+	s.syncListeners(s.ctx, cfg.Listeners)
+	s.events.Add("config", "configuration changed")
+	s.log.Info("config applied")
+	return nil
 }
+
+func (s *Server) TestRoute(listener, host string) admin.RouteTest {
+	res, _ := s.decide(listener, host)
+	out := admin.RouteTest{Rule: res.Rule, Via: res.Via, Egress: res.Egress}
+	if res.Err != nil {
+		out.Error = res.Err.Error()
+	}
+	return out
+}
+
+func (s *Server) RestartTunnel(name string) bool { return s.workers.Restart(name) }
+
+func (s *Server) Event(kind, message string) { s.events.Add(kind, message) }
 
 // Healthcheck is the container health check: it asks the supervisor's
 // /healthz on localhost and fails unless the answer is 200.

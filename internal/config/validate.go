@@ -45,7 +45,9 @@ func (v *validator) run() {
 	for i, k := range c.Keys {
 		at := fmt.Sprintf("keys[%d]", i)
 		v.name(at, k.Name, v.keys)
-		if !isWGKey(k.SecretKey) {
+		if k.SecretKey == Redacted {
+			v.errf("%s (%s): secretKey must be given (no stored key of that name to keep)", at, k.Name)
+		} else if !isWGKey(k.SecretKey) {
 			v.errf("%s (%s): secretKey is not a base64 32-byte key", at, k.Name)
 		}
 	}
@@ -82,6 +84,8 @@ func (v *validator) run() {
 			for _, u := range l.Auth.Users {
 				if u.Username == "" || u.Password == "" {
 					v.errf("%s (%s): users need a username and a password", at, l.Name)
+				} else if u.Password == Redacted {
+					v.errf("%s (%s): password of user %q must be given (no stored value to keep)", at, l.Name, u.Username)
 				} else if seen[u.Username] {
 					v.errf("%s (%s): duplicate user %q", at, l.Name, u.Username)
 				}
@@ -152,7 +156,9 @@ func (v *validator) wireguard(at string, w WireGuard) {
 	if !isWGKey(w.Peer.PublicKey) {
 		v.errf("%s: peer.publicKey is not a base64 32-byte key", at)
 	}
-	if w.Peer.PresharedKey != "" && !isWGKey(w.Peer.PresharedKey) {
+	if w.Peer.PresharedKey == Redacted {
+		v.errf("%s: peer.presharedKey must be given (no stored value to keep)", at)
+	} else if w.Peer.PresharedKey != "" && !isWGKey(w.Peer.PresharedKey) {
 		v.errf("%s: peer.presharedKey is not a base64 32-byte key", at)
 	}
 	if !isHostPort(w.Peer.Endpoint) {
@@ -217,6 +223,9 @@ func (v *validator) upstream(at string, u Upstream) {
 			}
 		default:
 			v.errf("%s: auth type must be basic or bearer", at)
+		}
+		if a.Password == Redacted || a.Token == Redacted {
+			v.errf("%s: the auth secret must be given (no stored value to keep)", at)
 		}
 	}
 }

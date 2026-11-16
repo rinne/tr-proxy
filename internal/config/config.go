@@ -38,6 +38,9 @@ type Config struct {
 type Key struct {
 	Name      string `json:"name"`
 	SecretKey string `json:"secretKey"`
+	// PublicKey is derived from SecretKey for the admin API. It is ignored
+	// on input and never stored.
+	PublicKey string `json:"publicKey,omitempty"`
 }
 
 type WireGuard struct {
@@ -202,6 +205,9 @@ func Parse(data []byte) (*Config, error) {
 	}
 	if dec.More() {
 		return nil, fmt.Errorf("parse config: trailing data after the JSON object")
+	}
+	for i := range c.Keys {
+		c.Keys[i].PublicKey = ""
 	}
 	return &c, nil
 }

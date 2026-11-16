@@ -28,11 +28,11 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// startServer writes cfg to a temp dir and runs a supervisor on it.
-func startServer(t *testing.T, cfg *config.Config) *Server {
+// newTestEnv returns an environment rooted in a fresh temp dir.
+func newTestEnv(t *testing.T) *Env {
 	t.Helper()
 	dir := t.TempDir()
-	env := &Env{
+	return &Env{
 		AdminUsername: "admin",
 		AdminPassword: "test-password",
 		AdminPort:     freePort(t),
@@ -40,12 +40,11 @@ func startServer(t *testing.T, cfg *config.Config) *Server {
 		ConfigPath:    filepath.Join(dir, "config.json"),
 		RunDir:        filepath.Join(dir, "run"),
 	}
-	if err := config.Validate(cfg, env.ProxyPorts); err != nil {
-		t.Fatalf("test config is invalid:\n%v", err)
-	}
-	if err := config.Save(env.ConfigPath, cfg); err != nil {
-		t.Fatal(err)
-	}
+}
+
+// runServer runs a supervisor on env until the test ends.
+func runServer(t *testing.T, env *Env) *Server {
+	t.Helper()
 	s, err := New(env, testLog(t))
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +58,19 @@ func startServer(t *testing.T, cfg *config.Config) *Server {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// startServer writes cfg to a temp dir and runs a supervisor on it.
+func startServer(t *testing.T, cfg *config.Config) *Server {
+	t.Helper()
+	env := newTestEnv(t)
+	if err := config.Validate(cfg, env.ProxyPorts); err != nil {
+		t.Fatalf("test config is invalid:\n%v", err)
+	}
+	if err := config.Save(env.ConfigPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return runServer(t, env)
 }
 
 func (s *Server) waitUp(t *testing.T, names ...string) {

@@ -128,12 +128,13 @@ func TestWorkerTunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workers, err := NewWorkers(testLog(t), t.TempDir())
+	workers, err := NewWorkers(testLog(t), t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	workers.Start(ctx, cfg)
+	workers.Start(ctx)
+	workers.Sync(workers.Specs(cfg))
 	defer func() {
 		cancel()
 		workers.Wait()

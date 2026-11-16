@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -41,22 +43,38 @@ type WorkerStatus struct {
 // Workers runs one worker process per WireGuard connection and restarts any
 // that exit, stop sending heartbeats or report their tunnel down.
 type Workers struct {
-	exe    string
-	runDir string
-	log    *slog.Logger
-	wg     sync.WaitGroup
+	exe     string
+	runDir  string
+	log     *slog.Logger
+	onEvent func(kind, message string)
+	wg      sync.WaitGroup
 
-	mu     sync.Mutex
-	status map[string]*WorkerStatus
+	// syncMu serializes Sync and Restart.
+	syncMu sync.Mutex
+
+	mu      sync.Mutex
+	ctx     context.Context
+	running map[string]*workerProc
+}
+
+// workerProc is one supervised connection.
+type workerProc struct {
+	spec   ipc.Spec
+	cancel context.CancelFunc
+	done   chan struct{}
+	status WorkerStatus // guarded by Workers.mu
 }
 
 // NewWorkers prepares a worker set whose dial sockets live in runDir.
-func NewWorkers(log *slog.Logger, runDir string) (*Workers, error) {
+func NewWorkers(log *slog.Logger, runDir string, onEvent func(kind, message string)) (*Workers, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	return &Workers{exe: exe, runDir: runDir, log: log, status: map[string]*WorkerStatus{}}, nil
+	if onEvent == nil {
+		onEvent = func(string, string) {}
+	}
+	return &Workers{exe: exe, runDir: runDir, log: log, onEvent: onEvent, running: map[string]*workerProc{}}, nil
 }
 
 // SocketPath is where the named connection's worker serves dial requests.
@@ -64,35 +82,124 @@ func (w *Workers) SocketPath(name string) string {
 	return filepath.Join(w.runDir, name+".sock")
 }
 
-// Start launches a supervised worker for every connection in the config. The
-// workers stop when ctx is cancelled; Wait blocks until they have.
-func (w *Workers) Start(ctx context.Context, c *config.Config) {
+// Specs returns the worker specs for a validated config.
+func (w *Workers) Specs(c *config.Config) []ipc.Spec {
+	specs := make([]ipc.Spec, 0, len(c.WireGuard))
 	for _, conn := range c.WireGuard {
-		key, _ := c.KeyByName(conn.LocalKey) // presence is checked by Validate
-		spec := ipc.Spec{Connection: conn, SecretKey: key.SecretKey, Socket: w.SocketPath(conn.Name)}
-
-		w.mu.Lock()
-		w.status[conn.Name] = &WorkerStatus{Name: conn.Name, State: ipc.StateStarting}
-		w.mu.Unlock()
-
-		w.wg.Add(1)
-		go func() {
-			defer w.wg.Done()
-			w.supervise(ctx, spec)
-		}()
+		key, _ := c.KeyByName(conn.LocalKey)
+		specs = append(specs, ipc.Spec{Connection: conn, SecretKey: key.SecretKey, Socket: w.SocketPath(conn.Name)})
 	}
+	return specs
+}
+
+// Start sets the context all workers live under. Workers stop when it is
+// cancelled; Wait blocks until they have.
+func (w *Workers) Start(ctx context.Context) {
+	w.mu.Lock()
+	w.ctx = ctx
+	w.mu.Unlock()
+}
+
+// Sync makes the running workers match specs: workers whose connection is
+// gone or changed are stopped, missing ones are started, and the rest are
+// left alone.
+func (w *Workers) Sync(specs []ipc.Spec) {
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
+
+	want := map[string]ipc.Spec{}
+	for _, s := range specs {
+		want[s.Connection.Name] = s
+	}
+
+	var stopping []*workerProc
+	w.mu.Lock()
+	for name, wk := range w.running {
+		if s, ok := want[name]; !ok || !reflect.DeepEqual(s, wk.spec) {
+			stopping = append(stopping, wk)
+			delete(w.running, name)
+		}
+	}
+	w.mu.Unlock()
+	// The old process must be gone before a new one takes over its socket.
+	for _, wk := range stopping {
+		wk.cancel()
+	}
+	for _, wk := range stopping {
+		<-wk.done
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, s := range specs {
+		if _, ok := w.running[s.Connection.Name]; !ok {
+			w.startLocked(s, 0)
+		}
+	}
+}
+
+// Restart stops and starts the named worker. It reports whether there is
+// such a worker.
+func (w *Workers) Restart(name string) bool {
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
+
+	w.mu.Lock()
+	wk, ok := w.running[name]
+	if ok {
+		delete(w.running, name)
+	}
+	w.mu.Unlock()
+	if !ok {
+		return false
+	}
+	wk.cancel()
+	<-wk.done
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.startLocked(wk.spec, wk.status.Restarts+1)
+	w.onEvent("tunnel", fmt.Sprintf("%s: restarted on request", name))
+	return true
+}
+
+func (w *Workers) startLocked(spec ipc.Spec, restarts int) {
+	if w.ctx == nil || w.ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(w.ctx)
+	wk := &workerProc{
+		spec:   spec,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		status: WorkerStatus{
+			Name:     spec.Connection.Name,
+			State:    ipc.StateStarting,
+			Restarts: restarts,
+			Probe:    ipc.Probe{Type: spec.Connection.EffectiveProbe().Type},
+		},
+	}
+	w.running[spec.Connection.Name] = wk
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		defer close(wk.done)
+		defer cancel()
+		w.supervise(ctx, wk)
+	}()
 }
 
 func (w *Workers) Wait() { w.wg.Wait() }
 
-// Status returns a snapshot of all workers.
+// Status returns a snapshot of all workers, sorted by name.
 func (w *Workers) Status() []WorkerStatus {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	out := make([]WorkerStatus, 0, len(w.status))
-	for _, s := range w.status {
-		out = append(out, *s)
+	out := make([]WorkerStatus, 0, len(w.running))
+	for _, wk := range w.running {
+		out = append(out, wk.status)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -100,26 +207,26 @@ func (w *Workers) Status() []WorkerStatus {
 func (w *Workers) State(name string) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if s, ok := w.status[name]; ok {
-		return s.State
+	if wk, ok := w.running[name]; ok {
+		return wk.status.State
 	}
 	return ipc.StateDown
 }
 
-func (w *Workers) update(name string, f func(s *WorkerStatus)) {
+func (w *Workers) update(wk *workerProc, f func(s *WorkerStatus)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	f(w.status[name])
+	f(&wk.status)
 }
 
 // supervise keeps one worker running until ctx is cancelled.
-func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
-	name := spec.Connection.Name
+func (w *Workers) supervise(ctx context.Context, wk *workerProc) {
+	name := wk.spec.Connection.Name
 	log := w.log.With("connection", name)
 	backoff := backoffMin
 
 	for {
-		wasUp, err := w.runOnce(ctx, spec, log)
+		wasUp, err := w.runOnce(ctx, wk, log)
 		if ctx.Err() != nil {
 			return
 		}
@@ -128,7 +235,7 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 		if wasUp {
 			backoff = backoffMin
 		}
-		w.update(name, func(s *WorkerStatus) {
+		w.update(wk, func(s *WorkerStatus) {
 			s.State = ipc.StateRestarting
 			s.PID = 0
 			s.Restarts++
@@ -136,6 +243,7 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 			s.Probe = ipc.Probe{Type: s.Probe.Type}
 		})
 		log.Warn("worker exited; restarting", "err", err, "in", backoff)
+		w.onEvent("tunnel", fmt.Sprintf("%s: %v; restarting in %s", name, err, backoff))
 
 		select {
 		case <-ctx.Done():
@@ -147,11 +255,9 @@ func (w *Workers) supervise(ctx context.Context, spec ipc.Spec) {
 }
 
 // runOnce runs one worker process to completion. It returns when the process
-// has exited: on its own, because ctx was cancelled, or because it was killed
-// for missing heartbeats.
-func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) (wasUp bool, err error) {
-	name := spec.Connection.Name
-
+// has exited: on its own, because ctx was cancelled, because it was killed
+// for missing heartbeats, or because it reported its tunnel down.
+func (w *Workers) runOnce(ctx context.Context, wk *workerProc, log *slog.Logger) (wasUp bool, err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
@@ -172,7 +278,7 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 	if err := cmd.Start(); err != nil {
 		return false, err
 	}
-	w.update(name, func(s *WorkerStatus) {
+	w.update(wk, func(s *WorkerStatus) {
 		s.State = ipc.StateStarting
 		s.PID = cmd.Process.Pid
 	})
@@ -180,7 +286,7 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 
 	// The spec goes first; stdin then stays open until the process is gone,
 	// which is how the worker knows the supervisor is alive.
-	if err := json.NewEncoder(stdin).Encode(spec); err != nil {
+	if err := json.NewEncoder(stdin).Encode(wk.spec); err != nil {
 		cancel(fmt.Errorf("send spec: %w", err))
 	}
 
@@ -197,13 +303,9 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 			continue
 		}
 		watchdog.Reset(ipc.HeartbeatTimeout)
-		switch st.State {
-		case ipc.StateUp:
-			wasUp = true
-		case ipc.StateDown:
-			cancel(fmt.Errorf("tunnel is down: %s", st.LastError))
-		}
-		w.update(name, func(s *WorkerStatus) {
+		var previous string
+		w.update(wk, func(s *WorkerStatus) {
+			previous = s.State
 			s.State = st.State
 			s.LastError = st.LastError
 			s.LastHeartbeat = time.Now()
@@ -214,6 +316,15 @@ func (w *Workers) runOnce(ctx context.Context, spec ipc.Spec, log *slog.Logger) 
 			s.Rx, s.Tx = st.Rx, st.Tx
 			s.Probe = st.Probe
 		})
+		if st.State != previous {
+			w.onEvent("tunnel", fmt.Sprintf("%s: %s", wk.spec.Connection.Name, st.State))
+		}
+		switch st.State {
+		case ipc.StateUp:
+			wasUp = true
+		case ipc.StateDown:
+			cancel(fmt.Errorf("tunnel is down: %s", st.LastError))
+		}
 	}
 
 	waitErr := cmd.Wait()

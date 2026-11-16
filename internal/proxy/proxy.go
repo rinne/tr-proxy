@@ -48,6 +48,8 @@ type Server struct {
 	Log     *slog.Logger
 	// Auth checks a client's credentials; nil means the listener is open.
 	Auth func(username, password string) bool
+	// OnAuthFailure, if set, is told about every rejected login.
+	OnAuthFailure func(client, username string)
 }
 
 // authenticate checks credentials and counts a failure.
@@ -57,6 +59,9 @@ func (s *Server) authenticate(client, username, password string) bool {
 	}
 	s.Tracker.AuthFailure(s.Name)
 	s.Log.Warn("proxy login rejected", "listener", s.Name, "client", client, "username", username)
+	if s.OnAuthFailure != nil {
+		s.OnAuthFailure(client, username)
+	}
 	return false
 }
 
