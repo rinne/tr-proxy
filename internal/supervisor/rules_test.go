@@ -64,12 +64,17 @@ func proxyTransport(port int) *http.Transport {
 // connectVia opens a CONNECT tunnel by hand and returns the status line and
 // the connection.
 func connectVia(port int, target string) (string, net.Conn, error) {
+	return connectViaProto(port, target, "HTTP/1.1")
+}
+
+// connectViaProto is connectVia with a chosen HTTP version in the request.
+func connectViaProto(port int, target, proto string) (string, net.Conn, error) {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
 	if err != nil {
 		return "", nil, err
 	}
 	c.SetDeadline(time.Now().Add(10 * time.Second))
-	fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	fmt.Fprintf(c, "CONNECT %s %s\r\nHost: %s\r\n\r\n", target, proto, target)
 	// Unbuffered reads up to the blank line, so no tunnel bytes are lost.
 	var head []byte
 	b := make([]byte, 1)
@@ -228,4 +233,58 @@ func TestRules(t *testing.T) {
 			t.Errorf("got %d %v, want 400", status, err)
 		}
 	})
+}
+
+// TestConnectToServerThatSpeaksFirst covers protocols such as SSH, where the
+// server sends a banner before the client says anything, and clients that
+// speak HTTP/1.0 to the proxy.
+func TestConnectToServerThatSpeaksFirst(t *testing.T) {
+	const banner = "SSH-2.0-test\r\n"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				io.WriteString(c, banner)
+				io.Copy(c, c)
+			}()
+		}
+	}()
+
+	cfg := config.New()
+	webPort := freePort(t)
+	cfg.Listeners = []config.Listener{{Name: "web", Type: "http", Port: webPort}}
+	startServer(t, cfg)
+
+	for proto, wantStatus := range map[string]string{
+		"HTTP/1.0": "HTTP/1.0 200 Connection established",
+		"HTTP/1.1": "HTTP/1.1 200 Connection established",
+	} {
+		status, c, err := connectViaProto(webPort, ln.Addr().String(), proto)
+		if err != nil {
+			t.Fatalf("%s: %v", proto, err)
+		}
+		if status != wantStatus {
+			t.Errorf("%s: status line %q, want %q", proto, status, wantStatus)
+		}
+		got := make([]byte, len(banner))
+		if _, err := io.ReadFull(c, got); err != nil || string(got) != banner {
+			t.Errorf("%s: banner %q, %v", proto, got, err)
+		}
+		// The tunnel stays open for the client's side of the conversation.
+		io.WriteString(c, "hello")
+		echo := make([]byte, 5)
+		if _, err := io.ReadFull(c, echo); err != nil || string(echo) != "hello" {
+			t.Errorf("%s: echo %q, %v", proto, echo, err)
+		}
+		c.Close()
+	}
 }

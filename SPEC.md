@@ -434,7 +434,10 @@ reply codes: "not allowed by ruleset" for `block`, "general failure" when no
 egress is healthy, "host unreachable" when the dial fails.
 
 HTTP listeners accept `CONNECT host:port` tunnels and plain-HTTP requests
-with an absolute `http://` URL. Each forwarded plain-HTTP request is routed
+with an absolute `http://` URL. A `CONNECT` tunnel carries any TCP protocol,
+SSH included. The success line is sent in the client's HTTP version
+(`HTTP/1.0 200` to an HTTP/1.0 request), because some clients, macOS `nc`
+among them, accept nothing else. Each forwarded plain-HTTP request is routed
 on its own and uses its own upstream connection; `Proxy-*` headers are not
 passed on and no `X-Forwarded-*` headers are added. Failures are reported as
 403 for `block`, 503 when no egress is healthy and 502 when the dial fails.

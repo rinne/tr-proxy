@@ -124,7 +124,14 @@ func (s *Server) handleConnect(ctx context.Context, w http.ResponseWriter, r *ht
 	defer client.Close()
 	client.SetDeadline(time.Time{})
 
-	if _, err := buf.WriteString("HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+	// Answer in the client's HTTP version. Some clients that send
+	// "CONNECT ... HTTP/1.0", macOS nc among them (and with it ssh's
+	// ProxyCommand), take only an "HTTP/1.0 200" line for success.
+	status := "HTTP/1.1 200 Connection established\r\n\r\n"
+	if r.ProtoMajor == 1 && r.ProtoMinor == 0 {
+		status = "HTTP/1.0 200 Connection established\r\n\r\n"
+	}
+	if _, err := buf.WriteString(status); err != nil {
 		return
 	}
 	if err := buf.Flush(); err != nil {
