@@ -130,15 +130,22 @@ if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
     echo "==> WARNING: CHANGELOG.md has no entry for $VERSION (continuing because --force)"
 fi
 
+REVISION="$(git rev-parse HEAD)"
+
+# The release tag may be created beforehand, as long as it names the commit
+# being released. A tag anywhere else means the version is taken.
 if git rev-parse --verify --quiet "refs/tags/$GIT_TAG" >/dev/null; then
-    if [[ "$FORCE" -ne 1 ]]; then
-        echo "git tag $GIT_TAG already exists; delete it locally and remotely first, or pass --force" >&2
+    TAGGED="$(git rev-parse "refs/tags/$GIT_TAG^{commit}")"
+    if [[ "$TAGGED" == "$REVISION" ]]; then
+        echo "==> git tag $GIT_TAG already names this commit; it will be pushed after the image"
+    elif [[ "$FORCE" -ne 1 ]]; then
+        echo "git tag $GIT_TAG already exists and names another commit (${TAGGED:0:7}, not ${REVISION:0:7}); delete it locally and remotely first, or pass --force" >&2
         exit 1
+    else
+        echo "==> WARNING: git tag $GIT_TAG names another commit (continuing because --force)"
     fi
-    echo "==> WARNING: git tag $GIT_TAG already exists (continuing because --force)"
 fi
 
-REVISION="$(git rev-parse HEAD)"
 SOURCE_URL="$(git config --get remote.origin.url 2>/dev/null || true)"
 if [[ "$SOURCE_URL" =~ ^git@([^:]+):(.+)\.git$ ]]; then
     SOURCE_URL="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
@@ -210,15 +217,15 @@ echo "==> pushed ${IMAGE}:${VERSION} ${DIGEST:-(digest lookup failed; image is p
 
 if [[ "$RETAG_LATEST_ONLY" -ne 1 ]]; then
     if git rev-parse --verify --quiet "refs/tags/$GIT_TAG" >/dev/null; then
-        echo "==> git tag $GIT_TAG already exists locally; not retagging"
+        echo "==> git tag $GIT_TAG exists; pushing it"
     else
         echo "==> tagging and pushing git tag $GIT_TAG"
         git tag -a "$GIT_TAG" -m "Release $GIT_TAG"
-        if git config --get remote.origin.url >/dev/null 2>&1; then
-            git push origin "$GIT_TAG"
-        else
-            echo "    no 'origin' remote configured; git tag created locally only" >&2
-        fi
+    fi
+    if git config --get remote.origin.url >/dev/null 2>&1; then
+        git push origin "$GIT_TAG"
+    else
+        echo "    no 'origin' remote configured; git tag exists locally only" >&2
     fi
 fi
 

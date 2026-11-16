@@ -2,6 +2,17 @@
 
 All notable changes to `tr-proxy` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-16
+
+### Added
+
+- **SOCKS5 upstream proxies.** An upstream proxy can now be of type `socks5` (`"url": "socks5://host[:port]"`, default port 1080) as well as `http`. It can log in with a username and password, hands hostnames to the upstream to resolve, is checked for reachability, and can be used in rules and failover lists like any other route. This makes anything with a SOCKS5 port usable as a route, for instance a Tor client in a sidecar container. The UI's upstream form has a type selector.
+
+### Changed
+
+- Upstream validation is stricter: the URL scheme must match the type, the port must be valid, a login must be given under `auth` rather than inside the URL of a SOCKS5 upstream, and a bearer token is refused for SOCKS5. Existing `http` upstreams are unaffected.
+- `scripts/publish.sh` accepts a release tag that was created beforehand, provided it names the commit being released, and pushes it after the image.
+
 ## [0.1.0] - 2026-11-16
 
 First public release.
