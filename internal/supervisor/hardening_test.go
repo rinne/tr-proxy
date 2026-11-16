@@ -81,19 +81,22 @@ func TestConnectionLimit(t *testing.T) {
 		c.Close()
 		t.Fatal("a third connection was served although the limit is two")
 	}
-	if got := s.tracker.Refused("socks"); got != 1 {
-		t.Errorf("refused = %d, want 1", got)
-	}
+	// The client can see the refusal a moment before the server has finished
+	// recording it, so wait for the record instead of reading it at once.
+	waitFor(t, "the refusal to be counted and logged", 5*time.Second, func() bool {
+		if s.tracker.Refused("socks") != 1 {
+			return false
+		}
+		for _, e := range s.events.Snapshot() {
+			if strings.Contains(e.Message, "at its limit of 2 connections") {
+				return true
+			}
+		}
+		return false
+	})
 	st := s.status()
 	if st.Listeners[0].Refused != 1 || st.Listeners[0].Connections != 2 {
 		t.Errorf("status: %+v", st.Listeners[0])
-	}
-	var noted bool
-	for _, e := range s.events.Snapshot() {
-		noted = noted || strings.Contains(e.Message, "at its limit of 2 connections")
-	}
-	if !noted {
-		t.Error("the event log does not mention the limit")
 	}
 	// The connections that were let in are unaffected.
 	if err := roundTrip(a, "still here"); err != nil {

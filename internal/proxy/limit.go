@@ -29,8 +29,10 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		}
 		if l.open.Add(1) > int64(l.max()) {
 			l.open.Add(-1)
-			c.Close()
+			// Count first, then close: by the time the client sees the
+			// connection go away, the refusal is on record.
 			l.onRefuse()
+			c.Close()
 			continue
 		}
 		return &limitConn{Conn: c, l: l}, nil
