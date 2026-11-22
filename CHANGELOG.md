@@ -2,6 +2,19 @@
 
 All notable changes to `tr-proxy` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-11-22
+
+### Security
+
+- **A removed proxy user could keep using an HTTP listener.** When a listener's config changed (a user removed, a password changed, auth turned on), its kept-alive HTTP connections went on serving requests with the old settings. When an HTTP listener is closed or reopened, its idle connections are now closed and active ones after their current request. CONNECT tunnels already open are not interrupted, as before.
+- **A login in the URL of an http upstream was accepted and shown.** It was never used, but the admin API returned it unredacted. Such URLs are now refused like for SOCKS5 upstreams; give the login under `auth`. A config file that has one is loaded with the login removed and a warning in the log and the event log.
+- Updated `golang.org/x/net`, `x/crypto`, `x/sys`, `x/time` and gVisor. `govulncheck` reported no vulnerability that tr-proxy's code reaches, but 37 in the old module versions; it reports none now.
+
+### Changed
+
+- CI and `scripts/publish.sh` run `govulncheck` (`make vulncheck`).
+- SPEC.md: removed a duplicated part of section 6.
+
 ## [0.2.1] - 2026-11-22
 
 ### Security
