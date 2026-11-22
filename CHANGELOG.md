@@ -2,6 +2,13 @@
 
 All notable changes to `tr-proxy` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-22
+
+### Security
+
+- **The admin API was reachable through the proxy.** The direct route refused loopback and link-local destinations, but the admin API and the listeners listen on every interface, so a proxy client could reach them at the container's own network address (for example `172.17.0.2:8080`). The direct route now also refuses the addresses of the container's own interfaces, unless `allowLocalDirect` is set.
+- **Destination names are validated.** A SOCKS5 domain name was used as sent, so a client could put CR and LF into the `CONNECT` request sent to an HTTP upstream proxy (adding headers or a second request), into SOCKS5 requests to upstreams, and into the logs, and names such as `127.1` got past IP rules. A destination must now be an IP address without a zone or a valid hostname whose last label is not all digits; anything else is refused before routing with HTTP 400 or SOCKS5 reply 8 (address type not supported).
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
