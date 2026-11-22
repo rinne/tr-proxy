@@ -152,6 +152,8 @@ func (s *Server) handleConnect(ctx context.Context, w http.ResponseWriter, r *ht
 // httpError maps a connect failure to a proxy response.
 func httpError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrBadDestination):
+		http.Error(w, "Not a valid destination host.", http.StatusBadRequest)
 	case errors.Is(err, ErrBlocked):
 		http.Error(w, "Blocked by proxy rule.", http.StatusForbidden)
 	case errors.Is(err, ErrUnavailable):

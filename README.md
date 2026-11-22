@@ -161,7 +161,7 @@ Limits, set under `limits` in the config (in the UI: Config as JSON):
 | `maxConnections`   | 1024    | Client connections per listener; more are closed at once |
 | `idleTimeout`      | 3600    | Seconds without a byte in either direction before a connection is closed; 0 means never |
 | `drainTimeout`     | 5       | Seconds that a stop waits for open connections |
-| `allowLocalDirect` | false   | Let the direct route reach loopback and link-local addresses |
+| `allowLocalDirect` | false   | Let the direct route reach loopback, link-local and the container's own addresses |
 
 ## HTTP API
 
@@ -190,7 +190,7 @@ If you mount a host directory on `/config` instead of a named volume, it must be
 mkdir -p config && sudo chown 65532:65532 config
 ```
 
-The direct route refuses loopback and link-local destinations by default. That keeps proxy clients away from the container's own admin API and, on a cloud host, from the metadata service at 169.254.169.254. Private networks (10.0.0.0/8 and the like) are not refused: block them with rules if clients should not reach them.
+The direct route refuses loopback and link-local destinations and the container's own addresses by default. That keeps proxy clients away from the container's own admin API, also at its Docker network address, and, on a cloud host, from the metadata service at 169.254.169.254. Destinations that are neither an IP address nor a valid hostname are refused. Private networks (10.0.0.0/8 and the like) are not refused: block them with rules if clients should not reach them.
 
 ### Watching it
 

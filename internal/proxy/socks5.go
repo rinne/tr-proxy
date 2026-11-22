@@ -59,6 +59,8 @@ func (s *Server) handleSOCKS5(ctx context.Context, c net.Conn) {
 	if err != nil {
 		code := byte(socksHostUnreachable)
 		switch {
+		case errors.Is(err, ErrBadDestination):
+			code = socksAddrNotSupported
 		case errors.Is(err, ErrBlocked):
 			code = socksNotAllowed
 		case errors.Is(err, ErrUnavailable):

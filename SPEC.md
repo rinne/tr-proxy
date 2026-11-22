@@ -273,16 +273,19 @@ listeners or interrupting connections.
 | `maxConnections`   | 1024    | Client connections one listener serves at a time. A connection beyond that is closed as soon as it is accepted, and counted. Connections still in their handshake count too. |
 | `idleTimeout`      | 3600    | Seconds. A proxied connection on which no byte has moved in either direction for this long is closed. So is one whose write has been stuck that long. 0 means never. |
 | `drainTimeout`     | 5       | Seconds that shutdown waits for open connections; 0 means not at all. |
-| `allowLocalDirect` | false   | Whether `direct` may connect to loopback, link-local, multicast and unspecified addresses. |
+| `allowLocalDirect` | false   | Whether `direct` may connect to loopback, link-local, multicast and unspecified addresses and to the container's own addresses. |
 
 A quiet direction does not time out while the other one is busy: a long
 download with a silent client stays up.
 
-Unless `allowLocalDirect` is set, `direct` refuses those addresses, judged by
-the address actually connected to after name resolution, and the client gets
-the same answer as for a `block` rule. This keeps proxy clients from the
-container's own admin API and listeners and from a cloud host's metadata
-service. It applies to destinations of `direct` only: an upstream proxy or a
+Unless `allowLocalDirect` is set, `direct` refuses those addresses, and the
+addresses of the container's own network interfaces, judged by the address
+actually connected to after name resolution, and the client gets the same
+answer as for a `block` rule. This keeps proxy clients from the container's
+own admin API and listeners, which listen on every interface and so are also
+reachable on the container's network address, and from a cloud host's
+metadata service. With host networking the host's addresses are the
+container's own, so they are refused too. It applies to destinations of `direct` only: an upstream proxy or a
 WireGuard endpoint on such an address is still used, and private networks
 are not refused.
 
@@ -607,9 +610,14 @@ deployment choice and should go together with listener auth.
 - Listener auth is per listener and is the access control for the proxy
   itself; open listeners are intended for localhost-only publishing.
 - With `direct` as an egress, proxy clients can reach whatever the container
-  can, except loopback and link-local addresses (5.6). That includes the
-  Docker network and private networks; use `block` rules where that is not
-  wanted.
+  can, except loopback and link-local addresses and the container's own
+  addresses (5.6). That includes the rest of the Docker network and private
+  networks; use `block` rules where that is not wanted.
+- A destination must be an IP address without a zone or a hostname of
+  letters, digits, hyphens and underscores whose last label is not all
+  digits. Anything else is refused before routing (HTTP 400, SOCKS5 reply 8),
+  so that a client cannot put CR, LF or other bytes into the `CONNECT` line
+  or SOCKS5 request sent to an upstream, into the logs, or past the rules.
 - No secret is written to the logs, the event log or the status: not keys,
   not passwords, not tokens, and not the passwords that failed logins tried.
   A rejected proxy login is logged with the username and client address.

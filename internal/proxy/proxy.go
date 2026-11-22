@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tr-proxy/internal/egress"
+	"tr-proxy/internal/netutil"
 )
 
 // How long a client gets to say where it wants to go.
@@ -25,6 +26,9 @@ var (
 	// ErrUnavailable: the rule's egress, or every entry of its failover
 	// list, is down. The connection fails closed.
 	ErrUnavailable = errors.New("no healthy egress for this destination")
+	// ErrBadDestination: the client asked for something that is neither an
+	// IP address nor a hostname.
+	ErrBadDestination = errors.New("not a valid destination host")
 )
 
 // Route is the Router's decision for one destination.
@@ -81,6 +85,11 @@ func (s *Server) authenticate(client, username, password string) bool {
 // finish with Done.
 func (s *Server) connect(ctx context.Context, client, host string, port int) (net.Conn, *Tracked, error) {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if !netutil.ValidHost(host) {
+		// Not logged with the name: it may hold anything, CR and LF too.
+		s.Log.Info("refused", "listener", s.Name, "client", client, "reason", ErrBadDestination.Error())
+		return nil, nil, ErrBadDestination
+	}
 	dest := net.JoinHostPort(host, strconv.Itoa(port))
 
 	route, err := s.Router.Route(s.Name, host)
