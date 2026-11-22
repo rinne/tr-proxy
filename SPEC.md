@@ -197,7 +197,10 @@ An upstream is another proxy used as a route. Two kinds are supported:
 
 - `auth`: `null`, `{ "type": "basic", "username": "...", "password": "..." }`
   or, for `http` only, `{ "type": "bearer", "token": "..." }`. Secrets are
-  write-only in the API. A login is given under `auth`, never inside the URL.
+  write-only in the API. A login is given under `auth`, never inside the URL;
+  a URL with one is refused. A config file from 0.2.1 or earlier with a
+  login in the URL of an `http` upstream (accepted then, but never used) has
+  it removed when loaded, with a warning in the log and the event log.
 - An `http` upstream is used with `CONNECT` for every connection, plain-HTTP
   requests included (`CONNECT host:80`). An upstream that refuses `CONNECT`
   to port 80 cannot carry plain HTTP. With an `https` URL the connection to
@@ -442,33 +445,6 @@ saved. Every response of the admin port carries a content security policy
 that allows same-origin resources only (scripts additionally `unsafe-eval`,
 which Alpine.js needs), and forbids framing.
 
-------------------------------------|
-| `status`         | `status`: a status snapshot (6.4) without the event log, once per second |
-| `events`         | `events`: event log entries the client has not seen yet; the backlog comes first |
-| `config-changed` | Nothing more: the config was changed, refetch it         |
-
-The stream is closed when the session ends.
-
-### 6.4 Status view
-
-`GET /api/status` returns:
-
-- `tunnels`: per tunnel the state, worker pid, restart count, last error,
-  last heartbeat, last handshake, rx/tx bytes, the endpoint and the probe
-  (type, ok, latency in ms, consecutive failures, error).
-- `upstreams`: reachability, last error and time of the last check.
-- `listeners`: type, port, whether auth is on, whether it is disabled,
-  active connections, rejected logins, connections refused at the connection
-  limit, and the error if the port could not be opened.
-- `connections`: listener, client, destination, matched rule, egress, bytes
-  up and down, start time.
-- `events`: the most recent 200 events (tunnel state changes and restarts,
-  listener failures, rejected proxy logins, admin logins, config changes, a
-  listener reaching its connection limit), held in memory. Of the
-  connections refused at the limit, the first and then every thousandth is
-  logged, so that a flood cannot push everything else out.
-- `configError`, if the config file was not usable at start-up.
-
 ## 7. Request flow
 
 1. A client connects to a listener and authenticates if the listener requires
@@ -505,7 +481,11 @@ A config change never interrupts a connection that is already open, with one
 exception: a connection through a tunnel whose worker the change restarts.
 A connection keeps the route it was given when it was opened, even if the
 rules now say otherwise, and a listener that is closed, disabled or reopened
-leaves the connections it accepted alone.
+leaves the connections it accepted alone. An HTTP listener's kept-alive
+connections are the exception within that: a request in progress finishes,
+but no further request is served on the connection, so that a removed user
+or other changed setting can't go on being used through it. CONNECT tunnels
+are open connections like any other.
 
 On shutdown (SIGTERM or SIGINT) the supervisor:
 
