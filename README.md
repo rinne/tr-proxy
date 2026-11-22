@@ -246,10 +246,11 @@ On Linux make that directory writable for the container first, as described unde
 ```bash
 make check
 make test
+make vulncheck
 tests/smoke.sh
 ```
 
-`make test` runs the Go tests in a container. They bring up real WireGuard tunnels against a peer built into the test code, so they need no VPN server, and they cover routing, failover, health monitoring, the admin API and shutdown. `tests/smoke.sh` builds the image and drives it from outside the way a deployment would: read-only root filesystem, no capabilities, a named volume, then the admin API, both listener types, rules, listener login, a tunnel worker, a restart and a clean stop. `scripts/publish.sh` runs all three before publishing.
+`make test` runs the Go tests in a container. They bring up real WireGuard tunnels against a peer built into the test code, so they need no VPN server, and they cover routing, failover, health monitoring, the admin API and shutdown. `tests/smoke.sh` builds the image and drives it from outside the way a deployment would: read-only root filesystem, no capabilities, a named volume, then the admin API, both listener types, rules, listener login, a tunnel worker, a restart and a clean stop. `make vulncheck` runs `govulncheck`, which reports known vulnerabilities in the Go standard library and the modules only where tr-proxy's code reaches them. `scripts/publish.sh` and CI run all of these.
 
 ## Publish To Docker Hub
 
@@ -268,7 +269,7 @@ scripts/publish.sh 0.1.0
 In order:
 
 1. Guards: on `main`, clean working tree, a `CHANGELOG.md` entry for the version, no registry tag of that version yet, and no git tag `v<version>` unless it names the commit being released.
-2. Pull the current base images, then `make check`, `make test` and `tests/smoke.sh`.
+2. Pull the current base images, then `make check`, `make test`, `make vulncheck` and `tests/smoke.sh`.
 3. Build and push `:<version>`.
 4. Promote `:latest` with `buildx imagetools create` (manifest only, no rebuild).
 5. `git tag v<version>`, unless the tag was made beforehand, and push the tag.

@@ -7,7 +7,7 @@ GO_RUN   := docker run --rm -v "$(CURDIR)":/src -w /src \
             -e CGO_ENABLED=0 $(GO_IMAGE)
 COMPOSE  := docker compose -f dc/docker-compose.yaml
 
-.PHONY: build test vet fmt check smoke tidy up down logs
+.PHONY: build test vet fmt check vulncheck smoke tidy up down logs
 
 build:
 	docker build --pull -t tr-proxy:local .
@@ -25,6 +25,11 @@ fmt:
 # not gofmt-formatted or vet complains.
 check:
 	$(GO_RUN) sh -c 'out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "not formatted (run: make fmt):"; echo "$$out"; exit 1; fi; go vet ./...'
+
+# Known vulnerabilities in the code paths tr-proxy uses (Go standard
+# library and modules), from the Go vulnerability database.
+vulncheck:
+	$(GO_RUN) go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 # End-to-end test of the built image.
 smoke:
