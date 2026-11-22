@@ -142,6 +142,11 @@ func (s *Server) loadOrCreateConfig() (*config.Config, error) {
 		return cfg, nil
 	}
 	if err == nil {
+		for _, name := range config.StripURLLogins(cfg) {
+			msg := fmt.Sprintf("upstream %s: the login in its url was removed; it was never used, give it under auth", name)
+			s.log.Warn("login removed from an upstream url", "upstream", name)
+			s.events.Add("config", msg)
+		}
 		err = config.Validate(cfg, s.env.ProxyPorts)
 	}
 	if err != nil {

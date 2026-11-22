@@ -103,6 +103,7 @@ func TestValidateRejects(t *testing.T) {
 		{"upstream port", func(c *Config) { c.Upstreams[0].URL = "http://x:99999/" }, "invalid port"},
 		{"socks5 url", func(c *Config) { c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "http://x:1080"} }, "url of a socks5 upstream"},
 		{"socks5 login in url", func(c *Config) { c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://u:p@x:1080"} }, "under auth"},
+		{"http login in url", func(c *Config) { c.Upstreams[0] = Upstream{Name: "H", Type: "http", URL: "https://u:p@x/"} }, "under auth"},
 		{"socks5 bearer", func(c *Config) {
 			c.Upstreams[0] = Upstream{Name: "S", Type: "socks5", URL: "socks5://x", Auth: &UpstreamAuth{Type: "bearer", Token: "t"}}
 		}, "not a token"},

@@ -57,3 +57,21 @@ func TestRedactAndMerge(t *testing.T) {
 		t.Error("a new password was overwritten by the stored one")
 	}
 }
+
+func TestStripURLLogins(t *testing.T) {
+	c := New()
+	c.Upstreams = []Upstream{
+		{Name: "a", Type: "http", URL: "https://user:secret@proxy.example:8443/"},
+		{Name: "b", Type: "http", URL: "http://proxy.example/"},
+		{Name: "c", Type: "socks5", URL: "socks5://u@socks.example:1080"},
+	}
+	names := StripURLLogins(c)
+	if len(names) != 2 || names[0] != "a" || names[1] != "c" {
+		t.Fatalf("names = %q, want [a c]", names)
+	}
+	for i, want := range []string{"https://proxy.example:8443/", "http://proxy.example/", "socks5://socks.example:1080"} {
+		if c.Upstreams[i].URL != want {
+			t.Errorf("upstream %d: url %q, want %q", i, c.Upstreams[i].URL, want)
+		}
+	}
+}

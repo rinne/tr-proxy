@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"net/url"
 
 	"tr-proxy/internal/wgkey"
 )
@@ -117,4 +118,23 @@ func MergeSecrets(c, stored *Config) {
 			}
 		}
 	}
+}
+
+// StripURLLogins removes a login (userinfo) from the url of each upstream
+// and returns the names of the upstreams that had one. Validate refuses such
+// urls; versions before 0.2.2 accepted them for http upstreams, but never
+// used the login, and the admin API showed it unredacted. A config file
+// written by such a version is cleaned with this when it is loaded.
+func StripURLLogins(c *Config) []string {
+	var names []string
+	for i := range c.Upstreams {
+		pu, err := url.Parse(c.Upstreams[i].URL)
+		if err != nil || pu.User == nil {
+			continue
+		}
+		pu.User = nil
+		c.Upstreams[i].URL = pu.String()
+		names = append(names, c.Upstreams[i].Name)
+	}
+	return names
 }

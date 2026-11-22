@@ -229,11 +229,11 @@ func (v *validator) upstream(at string, u Upstream) {
 		if (pu.Scheme != "socks5" && pu.Scheme != "socks5h") || pu.Hostname() == "" {
 			v.errf("%s: url of a socks5 upstream must be socks5://host[:port]", at)
 		}
-		if pu.User != nil {
-			v.errf("%s: put the login under auth, not into the url", at)
-		}
 	default:
 		v.errf("%s: type must be http or socks5", at)
+	}
+	if pu.User != nil {
+		v.errf("%s: put the login under auth, not into the url", at)
 	}
 	if p := pu.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {

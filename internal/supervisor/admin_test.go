@@ -455,3 +455,31 @@ func TestStartWithUnusableConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestStartRemovesLoginFromUpstreamURL(t *testing.T) {
+	env := newTestEnv(t)
+	content := `{"version":1,"keys":[],"wireguard":[],"upstreams":[{"name":"U","type":"http","url":"https://user:secret@127.0.0.1:9/"}],"listeners":[],"rules":[],"default":"direct"}`
+	if err := os.WriteFile(env.ConfigPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := runServer(t, env)
+	c := newAPIClient(t, s)
+	c.login("")
+
+	var st Status
+	c.want(200, "GET", "/api/status", nil, &st)
+	if st.ConfigError != "" {
+		t.Fatalf("config not used: %s", st.ConfigError)
+	}
+	found := false
+	for _, e := range st.Events {
+		found = found || strings.Contains(e.Message, "upstream U: the login in its url was removed")
+	}
+	if !found {
+		t.Errorf("no event about the removed login: %+v", st.Events)
+	}
+	raw := c.want(200, "GET", "/api/config", nil, nil)
+	if strings.Contains(string(raw), "secret") || !strings.Contains(string(raw), `"https://127.0.0.1:9/"`) {
+		t.Errorf("config: %s", raw)
+	}
+}
