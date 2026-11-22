@@ -79,7 +79,15 @@ func (s *Server) ServeHTTP(ctx context.Context, ln net.Listener) {
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	srv.Serve(ln)
-	transport.CloseIdleConnections()
+	// The listener is closed: its config changed (users removed, for
+	// example) or tr-proxy stops. Requests on kept-alive connections must
+	// not go on with the old settings, so idle connections are closed now
+	// and active ones after their current request. CONNECT tunnels are
+	// hijacked and not affected.
+	go func() {
+		srv.Shutdown(context.Background())
+		transport.CloseIdleConnections()
+	}()
 }
 
 // httpAuthorized checks the Proxy-Authorization header. A request without

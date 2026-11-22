@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -127,5 +128,49 @@ func TestHTTPConnectRefusesInvalidHosts(t *testing.T) {
 	}
 	if got := rr.asked(); len(got) != 1 || got[0] != "example.com" {
 		t.Errorf("router asked about %q, want only the valid host", got)
+	}
+}
+
+func TestHTTPKeepAliveEndsWhenListenerCloses(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		Name:    "test",
+		Router:  &recordingRouter{},
+		Tracker: NewTracker(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Auth:    func(u, p string) bool { return u == "a" && p == "b" },
+	}
+	done := make(chan struct{})
+	go func() { s.ServeHTTP(context.Background(), ln); close(done) }()
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(c)
+	req := "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: Basic YTpi\r\n\r\n"
+	io.WriteString(c, req)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || resp.Close {
+		t.Fatalf("first request: %d close=%v, want 403 on a kept-alive connection", resp.StatusCode, resp.Close)
+	}
+
+	ln.Close()
+	<-done
+	// The idle connection is closed instead of serving another request
+	// with the old credentials.
+	io.WriteString(c, req)
+	if resp, err := http.ReadResponse(br, nil); err == nil {
+		t.Fatalf("request after the listener closed was answered: %d", resp.StatusCode)
 	}
 }
