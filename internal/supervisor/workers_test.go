@@ -186,3 +186,44 @@ func TestWorkerTunnel(t *testing.T) {
 		}
 	})
 }
+
+// A worker that stops sending heartbeats (here: stopped with SIGSTOP) is
+// taken as degraded within a few seconds and as down when the watchdog
+// fires, not only once the process is gone.
+func TestHungWorker(t *testing.T) {
+	fx := newTunnelFixture(t, "T1")
+	cfg := config.New()
+	cfg.Keys = []config.Key{fx.key}
+	cfg.WireGuard = []config.WireGuard{fx.conn}
+	workers, err := NewWorkers(testLog(t), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	workers.Start(ctx)
+	workers.Sync(workers.Specs(cfg))
+	defer func() {
+		cancel()
+		workers.Wait()
+	}()
+	waitFor(t, "handshake", 15*time.Second, func() bool { return workers.State("T1") == ipc.StateUp })
+
+	pid := workerStatus(workers, "T1").PID
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Kill(pid, syscall.SIGCONT)
+	stopped := time.Now()
+
+	waitFor(t, "degraded", heartbeatStale+3*time.Second, func() bool { return workers.State("T1") == ipc.StateDegraded })
+	if st := workerStatus(workers, "T1").State; st != ipc.StateDegraded {
+		t.Errorf("status shows %q, want degraded", st)
+	}
+	waitFor(t, "down", ipc.HeartbeatTimeout+2*time.Second, func() bool {
+		st := workers.State("T1")
+		return st != ipc.StateUp && st != ipc.StateDegraded
+	})
+	if took := time.Since(stopped); took > ipc.HeartbeatTimeout+2*time.Second {
+		t.Errorf("taken out of use after %s", took)
+	}
+}

@@ -25,6 +25,10 @@ const (
 	backoffMax = time.Minute
 	// How long a worker gets to exit after SIGTERM before it is killed.
 	stopGrace = 5 * time.Second
+	// A worker that has been up but has missed this long of heartbeats is
+	// taken as degraded, so that a failover list prefers another entry,
+	// until the watchdog gives up on it at ipc.HeartbeatTimeout.
+	heartbeatStale = 2*ipc.HeartbeatInterval + time.Second
 )
 
 // WorkerStatus is the supervisor's view of one worker.
@@ -202,7 +206,9 @@ func (w *Workers) Status() []WorkerStatus {
 	defer w.mu.Unlock()
 	out := make([]WorkerStatus, 0, len(w.running))
 	for _, wk := range w.running {
-		out = append(out, wk.status)
+		st := wk.status
+		st.State = effectiveState(st)
+		out = append(out, st)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -213,9 +219,18 @@ func (w *Workers) State(name string) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if wk, ok := w.running[name]; ok {
-		return wk.status.State
+		return effectiveState(wk.status)
 	}
 	return ipc.StateDown
+}
+
+// effectiveState is the worker's reported state, except that an up worker
+// whose heartbeats have stopped counts as degraded.
+func effectiveState(s WorkerStatus) string {
+	if s.State == ipc.StateUp && !s.LastHeartbeat.IsZero() && time.Since(s.LastHeartbeat) > heartbeatStale {
+		return ipc.StateDegraded
+	}
+	return s.State
 }
 
 func (w *Workers) update(wk *workerProc, f func(s *WorkerStatus)) {
@@ -296,7 +311,14 @@ func (w *Workers) runOnce(ctx context.Context, wk *workerProc, log *slog.Logger)
 	}
 
 	watchdog := time.AfterFunc(ipc.HeartbeatTimeout, func() {
-		cancel(fmt.Errorf("no heartbeat for %s", ipc.HeartbeatTimeout))
+		err := fmt.Errorf("no heartbeat for %s", ipc.HeartbeatTimeout)
+		// No new connections while the process is being stopped, which
+		// can take another stopGrace.
+		w.update(wk, func(s *WorkerStatus) {
+			s.State = ipc.StateDown
+			s.LastError = err.Error()
+		})
+		cancel(err)
 	})
 	defer watchdog.Stop()
 
