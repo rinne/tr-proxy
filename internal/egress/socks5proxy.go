@@ -77,7 +77,8 @@ func (p *SOCKS5Proxy) Check(ctx context.Context) error {
 }
 
 func (p *SOCKS5Proxy) Dial(ctx context.Context, host string, port int) (net.Conn, error) {
-	d, err := proxy.SOCKS5("tcp", p.addr, p.auth, p.forward())
+	fwd := &rawDialer{d: p.forward()}
+	d, err := proxy.SOCKS5("tcp", p.addr, p.auth, fwd)
 	if err != nil {
 		return nil, fmt.Errorf("upstream proxy: %w", err)
 	}
@@ -85,5 +86,40 @@ func (p *SOCKS5Proxy) Dial(ctx context.Context, host string, port int) (net.Conn
 	if err != nil {
 		return nil, fmt.Errorf("upstream proxy: %w", err)
 	}
+	if raw, ok := fwd.conn.(closeWriter); ok {
+		return halfCloseConn{Conn: c, raw: raw}, nil
+	}
 	return c, nil
 }
+
+type closeWriter interface {
+	CloseWrite() error
+}
+
+// rawDialer remembers the TCP connection to the upstream. The connection
+// that the SOCKS5 client returns wraps it without its CloseWrite, so a
+// client's half-close would otherwise become a full close.
+type rawDialer struct {
+	d    *net.Dialer
+	conn net.Conn
+}
+
+func (r *rawDialer) Dial(network, addr string) (net.Conn, error) {
+	return r.DialContext(context.Background(), network, addr)
+}
+
+func (r *rawDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	c, err := r.d.DialContext(ctx, network, addr)
+	r.conn = c
+	return c, err
+}
+
+// halfCloseConn is a connection through the SOCKS5 upstream that can end
+// its sending direction: after the handshake the stream is the plain TCP
+// connection.
+type halfCloseConn struct {
+	net.Conn
+	raw closeWriter
+}
+
+func (c halfCloseConn) CloseWrite() error { return c.raw.CloseWrite() }
