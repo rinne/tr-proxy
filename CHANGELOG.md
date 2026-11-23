@@ -2,6 +2,24 @@
 
 All notable changes to `tr-proxy` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-11-23
+
+### Security
+
+- **A hostname could get around a rule for its address.** Rules for addresses (`10.0.0.0/8 -> block`) were never compared with hostnames, so any name resolving into the network (for example `10.0.0.1.nip.io`) went out direct. Now a hostname that no hostname rule matches and that the default sends direct is checked against the address rules once it is resolved, and refused (HTTP 403, SOCKS5 reply 2) if they would block its address or send it elsewhere. Names are still not resolved before routing, and a hostname rule that sends a name direct is followed as before.
+- **The admin login lock was for everyone.** Ten failed logins within a minute, from anywhere, locked out the admin too. The lock is now per source address (an IPv6 /64 counts as one), with a lock for everyone only after a hundred failures within a minute from all sources together. Behind Docker's userland proxy, where all clients share one address, it works as before.
+
+### Fixed
+
+- A client's half-close through a SOCKS5 upstream closed the whole connection, so the answer to a request followed by a half-close (`nc -N`, for example) was lost.
+- A WireGuard worker that stopped sending heartbeats stayed `up` for up to 15 seconds, so new connections went to it (and waited for the dial timeout) instead of the next entry of a failover list. It is now `degraded` after five seconds without a heartbeat and `down` once the watchdog gives up on it.
+- Plain-HTTP forwarding dropped query parameters that Go's reverse proxy cannot parse, such as `x=%zz`. The query now goes on as the client sent it.
+- `limits.maxConnections`: a listener reopened for a config change started counting from zero while the connections it had accepted before were still open.
+
+### Changed
+
+- `make race` runs the tests with the race detector (in `golang:1.27`, which has cgo); CI and `scripts/publish.sh` run it too. It found races in the tests only, which are fixed; the upstream check now stops before shutdown returns.
+
 ## [0.2.2] - 2026-11-22
 
 ### Security
