@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +22,16 @@ import (
 const (
 	sessionTTL = 12 * time.Hour
 
-	// More than maxFailures failed logins within failureWindow lock the
-	// login for everyone until the window has passed. The limit is global
-	// because behind Docker's port publishing all clients tend to share one
-	// source address.
-	maxFailures   = 10
-	failureWindow = time.Minute
+	// maxFailures failed logins from one source within failureWindow lock
+	// the login for that source until the window has passed; a source is
+	// an IPv4 address or an IPv6 /64. Behind Docker's userland proxy all
+	// clients can share one address, and then this is a lock for everyone,
+	// as before. maxFailuresAll failed logins from all sources together
+	// lock it for everyone, so that spreading the attempts over many
+	// addresses does not allow unlimited guessing.
+	maxFailures    = 10
+	maxFailuresAll = 100
+	failureWindow  = time.Minute
 
 	totpStep = 30 * time.Second
 )
@@ -49,9 +55,10 @@ type Auth struct {
 	now        func() time.Time
 
 	mu          sync.Mutex
-	sessions    map[string]time.Time // token to expiry
-	failures    []time.Time
-	lastCounter uint64 // last TOTP time step that was accepted
+	sessions    map[string]time.Time   // token to expiry
+	failures    map[string][]time.Time // by source, within failureWindow
+	allFailures []time.Time            // all sources, within failureWindow
+	lastCounter uint64                 // last TOTP time step that was accepted
 }
 
 func NewAuth(c Credentials) *Auth {
@@ -61,27 +68,61 @@ func NewAuth(c Credentials) *Auth {
 		totp:     c.TOTPSecret,
 		now:      time.Now,
 		sessions: map[string]time.Time{},
+		failures: map[string][]time.Time{},
 	}
 }
 
 // TOTPRequired reports whether logins need a code.
 func (a *Auth) TOTPRequired() bool { return a.totp != nil }
 
-// Login checks the credentials and opens a session.
-func (a *Auth) Login(username, password, code string) (token string, expires time.Time, err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := a.now()
+// source is what failed logins are counted by: the client's IPv4 address,
+// or its IPv6 /64, so that one host cannot pick a fresh address for every
+// attempt. client is a host:port, as in http.Request.RemoteAddr.
+func source(client string) string {
+	host, _, err := net.SplitHostPort(client)
+	if err != nil {
+		host = client
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	ip = ip.Unmap().WithZone("")
+	if ip.Is6() {
+		return netip.PrefixFrom(ip, 64).Masked().String()
+	}
+	return ip.String()
+}
 
-	// Drop failures that have left the window.
-	recent := a.failures[:0]
-	for _, t := range a.failures {
+// recentOnly drops the times that have left the failure window.
+func recentOnly(times []time.Time, now time.Time) []time.Time {
+	recent := times[:0]
+	for _, t := range times {
 		if now.Sub(t) < failureWindow {
 			recent = append(recent, t)
 		}
 	}
-	a.failures = recent
-	if len(a.failures) >= maxFailures {
+	return recent
+}
+
+// Login checks the credentials of a login from client (host:port) and opens
+// a session.
+func (a *Auth) Login(client, username, password, code string) (token string, expires time.Time, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+
+	// Drop failures that have left the window, and sources without any.
+	a.allFailures = recentOnly(a.allFailures, now)
+	for src, times := range a.failures {
+		if times = recentOnly(times, now); len(times) == 0 {
+			delete(a.failures, src)
+		} else {
+			a.failures[src] = times
+		}
+	}
+	src := source(client)
+	if len(a.failures[src]) >= maxFailures || len(a.allFailures) >= maxFailuresAll {
 		return "", time.Time{}, ErrRateLimited
 	}
 
@@ -96,7 +137,8 @@ func (a *Auth) Login(username, password, code string) (token string, expires tim
 		}
 	}
 	if ok != 1 {
-		a.failures = append(a.failures, now)
+		a.failures[src] = append(a.failures[src], now)
+		a.allFailures = append(a.allFailures, now)
 		return "", time.Time{}, ErrBadLogin
 	}
 	if a.totp != nil {

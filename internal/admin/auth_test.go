@@ -2,6 +2,7 @@ package admin
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -35,11 +36,11 @@ func TestLoginAndSessions(t *testing.T) {
 	a, now := newTestAuth(nil)
 
 	for _, bad := range [][2]string{{"admin", "wrong"}, {"root", "secret"}, {"", ""}} {
-		if _, _, err := a.Login(bad[0], bad[1], ""); !errors.Is(err, ErrBadLogin) {
+		if _, _, err := a.Login("192.0.2.1:1234", bad[0], bad[1], ""); !errors.Is(err, ErrBadLogin) {
 			t.Errorf("Login(%q, %q) = %v, want ErrBadLogin", bad[0], bad[1], err)
 		}
 	}
-	token, expires, err := a.Login("admin", "secret", "")
+	token, expires, err := a.Login("192.0.2.1:1234", "admin", "secret", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestLoginAndSessions(t *testing.T) {
 		t.Error("session outlived its expiry")
 	}
 
-	token, _, _ = a.Login("admin", "secret", "")
+	token, _, _ = a.Login("192.0.2.1:1234", "admin", "secret", "")
 	a.Logout(token)
 	if a.Valid(token) {
 		t.Error("session survived logout")
@@ -65,16 +66,57 @@ func TestLoginAndSessions(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	a, now := newTestAuth(nil)
 	for i := 0; i < maxFailures; i++ {
-		if _, _, err := a.Login("admin", "wrong", ""); !errors.Is(err, ErrBadLogin) {
+		if _, _, err := a.Login("192.0.2.1:1234", "admin", "wrong", ""); !errors.Is(err, ErrBadLogin) {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
 	}
-	if _, _, err := a.Login("admin", "secret", ""); !errors.Is(err, ErrRateLimited) {
+	if _, _, err := a.Login("192.0.2.1:5678", "admin", "secret", ""); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("after %d failures: %v, want ErrRateLimited", maxFailures, err)
 	}
+	// Another client is not locked out.
+	if _, _, err := a.Login("192.0.2.2:1234", "admin", "secret", ""); err != nil {
+		t.Fatalf("another address: %v", err)
+	}
 	*now = now.Add(failureWindow + time.Second)
-	if _, _, err := a.Login("admin", "secret", ""); err != nil {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", ""); err != nil {
 		t.Fatalf("after the window: %v", err)
+	}
+	if len(a.failures) != 0 {
+		t.Errorf("failures of sources outside the window are kept: %v", a.failures)
+	}
+}
+
+func TestRateLimitIPv6Prefix(t *testing.T) {
+	a, _ := newTestAuth(nil)
+	// Every attempt from another address of the same /64.
+	for i := 0; i < maxFailures; i++ {
+		client := fmt.Sprintf("[2001:db8:1:2::%x]:443", i+1)
+		if _, _, err := a.Login(client, "admin", "wrong", ""); !errors.Is(err, ErrBadLogin) {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if _, _, err := a.Login("[2001:db8:1:2::ffff]:443", "admin", "secret", ""); !errors.Is(err, ErrRateLimited) {
+		t.Errorf("same /64: %v, want ErrRateLimited", err)
+	}
+	if _, _, err := a.Login("[2001:db8:1:3::1]:443", "admin", "secret", ""); err != nil {
+		t.Errorf("another /64: %v", err)
+	}
+}
+
+func TestRateLimitAllSources(t *testing.T) {
+	a, now := newTestAuth(nil)
+	for i := 0; i < maxFailuresAll; i++ {
+		client := fmt.Sprintf("198.51.100.%d:1000", i)
+		if _, _, err := a.Login(client, "admin", "wrong", ""); !errors.Is(err, ErrBadLogin) {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if _, _, err := a.Login("203.0.113.9:1000", "admin", "secret", ""); !errors.Is(err, ErrRateLimited) {
+		t.Errorf("after %d failures from many addresses: %v, want ErrRateLimited", maxFailuresAll, err)
+	}
+	*now = now.Add(failureWindow + time.Second)
+	if _, _, err := a.Login("203.0.113.9:1000", "admin", "secret", ""); err != nil {
+		t.Errorf("after the window: %v", err)
 	}
 }
 
@@ -82,31 +124,31 @@ func TestTOTP(t *testing.T) {
 	secret := []byte("a totp secret")
 	a, now := newTestAuth(secret)
 
-	if _, _, err := a.Login("admin", "secret", ""); !errors.Is(err, ErrBadLogin) {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", ""); !errors.Is(err, ErrBadLogin) {
 		t.Errorf("no code: %v", err)
 	}
-	if _, _, err := a.Login("admin", "secret", "000000"); !errors.Is(err, ErrBadLogin) {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", "000000"); !errors.Is(err, ErrBadLogin) {
 		t.Errorf("wrong code: %v", err)
 	}
 	code := TOTPCode(secret, *now)
-	if _, _, err := a.Login("admin", "wrong", code); !errors.Is(err, ErrBadLogin) {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "wrong", code); !errors.Is(err, ErrBadLogin) {
 		t.Errorf("right code, wrong password: %v", err)
 	}
 	// A wrong password does not use the code up.
-	if _, _, err := a.Login("admin", "secret", code); err != nil {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", code); err != nil {
 		t.Fatalf("right code: %v", err)
 	}
-	if _, _, err := a.Login("admin", "secret", code); !errors.Is(err, ErrBadLogin) {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", code); !errors.Is(err, ErrBadLogin) {
 		t.Errorf("code reuse: %v", err)
 	}
 
 	// The previous step's code is accepted (clock drift), a much older one
 	// is not.
 	*now = now.Add(5 * time.Minute)
-	if _, _, err := a.Login("admin", "secret", TOTPCode(secret, now.Add(-2*time.Minute))); !errors.Is(err, ErrBadLogin) {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", TOTPCode(secret, now.Add(-2*time.Minute))); !errors.Is(err, ErrBadLogin) {
 		t.Errorf("old code: %v", err)
 	}
-	if _, _, err := a.Login("admin", "secret", TOTPCode(secret, now.Add(-totpStep))); err != nil {
+	if _, _, err := a.Login("192.0.2.1:1234", "admin", "secret", TOTPCode(secret, now.Add(-totpStep))); err != nil {
 		t.Errorf("previous step's code: %v", err)
 	}
 }

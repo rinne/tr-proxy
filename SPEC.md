@@ -317,9 +317,12 @@ are not refused.
 - TOTP is RFC 6238 (SHA-1, six digits, 30-second steps). The code of the
   current step or a neighbouring one is accepted, and each code works once.
   A wrong password does not use a code up.
-- Ten failed logins within a minute lock the login for everyone until the
-  minute has passed (HTTP 429). The limit is global, not per client, because
-  behind Docker's port publishing clients share a source address.
+- Ten failed logins within a minute from one source lock the login for that
+  source until the minute has passed (HTTP 429); a source is an IPv4 address
+  or an IPv6 /64. A hundred failed logins within a minute from all sources
+  together lock it for everyone. Behind Docker's userland proxy (used for
+  connections from the host itself) all clients share one source address,
+  so there the first limit applies to everyone.
 - Requests that change something, and the login itself, are refused with 403
   when a browser sent them from another origin (`Origin` host differs from
   `Host`, or `Sec-Fetch-Site` says cross-site). Requests without browser

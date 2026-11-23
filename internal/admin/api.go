@@ -229,7 +229,7 @@ func (a *api) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	token, expires, err := a.auth.Login(body.Username, body.Password, body.TOTP)
+	token, expires, err := a.auth.Login(r.RemoteAddr, body.Username, body.Password, body.TOTP)
 	switch {
 	case errors.Is(err, ErrRateLimited):
 		w.Header().Set("Retry-After", "60")
