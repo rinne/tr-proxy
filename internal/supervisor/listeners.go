@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tr-proxy/internal/config"
@@ -17,6 +18,22 @@ import (
 type listeners struct {
 	mu     sync.Mutex
 	active map[string]*activeListener
+	// open counts each listener's open connections. It outlives the
+	// socket, so that a listener that is reopened after a config change
+	// still counts the connections it accepted before.
+	open map[string]*atomic.Int64
+}
+
+func (ls *listeners) counter(name string) *atomic.Int64 {
+	if ls.open == nil {
+		ls.open = map[string]*atomic.Int64{}
+	}
+	c, ok := ls.open[name]
+	if !ok {
+		c = new(atomic.Int64)
+		ls.open[name] = c
+	}
+	return c
 }
 
 type activeListener struct {
@@ -83,7 +100,7 @@ func (s *Server) syncListeners(ctx context.Context, want []config.Listener) {
 		name := l.Name
 		// The limit and the idle timeout are read from the current config
 		// each time, so changing them needs no new listener.
-		ln = proxy.LimitListener(ln,
+		ln = proxy.LimitListener(ln, ls.counter(name),
 			func() int { return s.state.Load().limits.MaxConnections },
 			func() { s.refused(name) })
 		a.ln = ln

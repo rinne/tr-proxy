@@ -136,6 +136,55 @@ func TestConnectionLimit(t *testing.T) {
 	}
 }
 
+// A listener that is reopened because its config changed still counts
+// the connections it accepted before.
+func TestConnectionLimitSurvivesReopen(t *testing.T) {
+	cfg := config.New()
+	port := freePort(t)
+	cfg.Listeners = []config.Listener{{Name: "socks", Type: "socks5", Port: port}}
+	cfg.Limits = &config.Limits{MaxConnections: intPtr(2), AllowLocalDirect: true, DrainTimeout: intPtr(0)}
+	s := startServer(t, cfg)
+	host, echoPort := localEcho(t)
+	target := fmt.Sprintf("%s:%d", host, echoPort)
+
+	open := socksDialer(t, port, nil)
+	a, err := open.Dial("tcp", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := open.Dial("tcp", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Adding a user reopens the listener.
+	c := newAPIClient(t, s)
+	c.login("")
+	var edit config.Config
+	c.want(200, "GET", "/api/config", nil, &edit)
+	edit.Listeners[0].Auth = &config.ListenerAuth{Users: []config.User{{Username: "u", Password: "p"}}}
+	c.want(200, "PUT", "/api/config", edit, nil)
+
+	authed := socksDialer(t, port, &proxy.Auth{User: "u", Password: "p"})
+	if conn, err := authed.Dial("tcp", target); err == nil {
+		conn.Close()
+		t.Fatal("the reopened listener took a third connection although two are open and the limit is two")
+	}
+	if err := roundTrip(a, "still open"); err != nil {
+		t.Fatalf("an old connection broke: %v", err)
+	}
+	a.Close()
+	waitFor(t, "the slot to be free", 5*time.Second, func() bool {
+		conn, err := authed.Dial("tcp", target)
+		if err == nil {
+			conn.Close()
+		}
+		return err == nil
+	})
+}
+
 func TestIdleTimeout(t *testing.T) {
 	cfg := config.New()
 	socksPort, webPort := freePort(t), freePort(t)

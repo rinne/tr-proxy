@@ -9,16 +9,18 @@ import (
 // LimitListener wraps a listener so that at most max() connections are open
 // at a time. A connection beyond that is closed as soon as it is accepted
 // and onRefuse is called. max is asked on every accept, so the limit can
-// change while the listener runs.
-func LimitListener(ln net.Listener, max func() int, onRefuse func()) net.Listener {
-	return &limitListener{Listener: ln, max: max, onRefuse: onRefuse}
+// change while the listener runs. open counts the open connections; give
+// a listener that replaces another one the same counter, so that the
+// connections the old one accepted still count.
+func LimitListener(ln net.Listener, open *atomic.Int64, max func() int, onRefuse func()) net.Listener {
+	return &limitListener{Listener: ln, open: open, max: max, onRefuse: onRefuse}
 }
 
 type limitListener struct {
 	net.Listener
+	open     *atomic.Int64
 	max      func() int
 	onRefuse func()
-	open     atomic.Int64
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
