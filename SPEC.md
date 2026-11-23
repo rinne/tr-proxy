@@ -283,7 +283,7 @@ listeners or interrupting connections.
 
 | Field              | Default | Meaning                                    |
 |--------------------|---------|--------------------------------------------|
-| `maxConnections`   | 1024    | Client connections one listener serves at a time. A connection beyond that is closed as soon as it is accepted, and counted. Connections still in their handshake count too. |
+| `maxConnections`   | 1024    | Client connections one listener serves at a time. A connection beyond that is closed as soon as it is accepted, and counted. Connections still in their handshake count too, and so do the ones a listener accepted before it was reopened for a config change. |
 | `idleTimeout`      | 3600    | Seconds. A proxied connection on which no byte has moved in either direction for this long is closed. So is one whose write has been stuck that long. 0 means never. |
 | `drainTimeout`     | 5       | Seconds that shutdown waits for open connections; 0 means not at all. |
 | `allowLocalDirect` | false   | Whether `direct` may connect to loopback, link-local, multicast and unspecified addresses and to the container's own addresses. |
@@ -480,13 +480,14 @@ with an absolute `http://` URL. A `CONNECT` tunnel carries any TCP protocol,
 SSH included. The success line is sent in the client's HTTP version
 (`HTTP/1.0 200` to an HTTP/1.0 request), because some clients, macOS `nc`
 among them, accept nothing else. Each forwarded plain-HTTP request is routed
-on its own and uses its own upstream connection; `Proxy-*` headers are not
-passed on and no `X-Forwarded-*` headers are added. Failures are reported as
+on its own and uses its own upstream connection; the URL and its query go
+on as the client sent them, `Proxy-*` headers are not passed on and no
+`X-Forwarded-*` headers are added. Failures are reported as
 403 for `block`, 503 when no egress is healthy and 502 when the dial fails.
 Any other request to the port gets a 400.
 
-A clean end of one direction is passed on as a half-close; an error closes
-both directions.
+A clean end of one direction is passed on as a half-close, through every
+egress (SOCKS5 upstreams included); an error closes both directions.
 
 ### 7.1 Reload and shutdown
 
@@ -534,14 +535,15 @@ Tunnel states:
 |--------------|------------------------------------------------------------|--------------------|
 | `starting`   | Running, no probe has succeeded yet                        | not used           |
 | `up`         | The last probe succeeded                                   | used               |
-| `degraded`   | Probes are failing, fewer than `failures` in a row         | used as last resort |
+| `degraded`   | Probes are failing, fewer than `failures` in a row, or no heartbeat for five seconds | used as last resort |
 | `down`       | `failures` probes failed in a row                          | not used           |
 | `restarting` | The worker is not running and waits for its backoff        | not used           |
 
 - A tunnel that has never passed a probe is probed every second and is
   declared down after `interval` × `failures` seconds.
 - A tunnel declared down is restarted. So is a worker that exits or sends no
-  heartbeat for ten seconds. Restarts back off exponentially from one second
+  heartbeat for ten seconds; such a worker is `down` from then on while it is
+  being stopped. Restarts back off exponentially from one second
   to one minute; the delay starts over once a tunnel has been up.
 - A rule's egress list is searched for the first `up` entry, then for the
   first `degraded` one. If there is neither, the connection fails closed.
