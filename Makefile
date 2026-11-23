@@ -5,15 +5,24 @@ GO_RUN   := docker run --rm -v "$(CURDIR)":/src -w /src \
             -v tr-proxy-gocache:/root/.cache/go-build \
             -v tr-proxy-gomod:/go/pkg/mod \
             -e CGO_ENABLED=0 $(GO_IMAGE)
+# The race detector needs cgo, which the alpine image has no C compiler for.
+RACE_IMAGE := golang:1.27
+RACE_RUN := docker run --rm -v "$(CURDIR)":/src -w /src \
+            -v tr-proxy-gocache-race:/root/.cache/go-build \
+            -v tr-proxy-gomod:/go/pkg/mod \
+            -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false $(RACE_IMAGE)
 COMPOSE  := docker compose -f dc/docker-compose.yaml
 
-.PHONY: build test vet fmt check vulncheck smoke tidy up down logs
+.PHONY: build test race vet fmt check vulncheck smoke tidy up down logs
 
 build:
 	docker build --pull -t tr-proxy:local .
 
 test:
 	$(GO_RUN) go test ./...
+
+race:
+	$(RACE_RUN) go test -race ./...
 
 vet:
 	$(GO_RUN) go vet ./...

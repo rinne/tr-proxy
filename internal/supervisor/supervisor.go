@@ -209,6 +209,7 @@ func (s *Server) Shutdown() {
 	s.tracker.CloseAll()
 	if s.cancel != nil {
 		s.cancel()
+		s.upstreams.wait()
 	}
 	s.workers.Wait()
 }

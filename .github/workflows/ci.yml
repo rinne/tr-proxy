@@ -15,6 +15,8 @@ jobs:
         run: make check
       - name: Go tests
         run: make test
+      - name: Go tests with the race detector
+        run: make race
       - name: Known vulnerabilities
         run: make vulncheck
       - name: Smoke test (image)

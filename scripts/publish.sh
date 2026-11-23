@@ -172,10 +172,12 @@ if [[ "$RETAG_LATEST_ONLY" -ne 1 ]]; then
         # the same reason.
         echo "==> pulling base images"
         docker pull golang:1.27-alpine
+        docker pull golang:1.27
         docker pull gcr.io/distroless/static-debian12:nonroot
         echo "==> checking formatting and running the Go tests"
         make check
         make test
+        make race
         echo "==> checking for known vulnerabilities"
         make vulncheck
         echo "==> running the smoke test"

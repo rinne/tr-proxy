@@ -9,7 +9,8 @@ import (
 )
 
 // How often upstream proxies are checked, and how long one check may take.
-// Variables so that tests can shorten them.
+// Variables so that tests can shorten them; a monitor reads them when it is
+// created.
 var (
 	upstreamCheckInterval = 15 * time.Second
 	upstreamCheckTimeout  = 5 * time.Second
@@ -26,13 +27,24 @@ type UpstreamStatus struct {
 // upstreamMonitor periodically checks that upstream proxies accept
 // connections.
 type upstreamMonitor struct {
+	interval, timeout time.Duration
+	done              chan struct{} // closed when run returns
+
 	mu     sync.Mutex
 	status map[string]UpstreamStatus
 }
 
 func newUpstreamMonitor() *upstreamMonitor {
-	return &upstreamMonitor{status: map[string]UpstreamStatus{}}
+	return &upstreamMonitor{
+		interval: upstreamCheckInterval,
+		timeout:  upstreamCheckTimeout,
+		done:     make(chan struct{}),
+		status:   map[string]UpstreamStatus{},
+	}
 }
+
+// wait blocks until run has returned; it must have been started.
+func (m *upstreamMonitor) wait() { <-m.done }
 
 // reachable reports false only for an upstream whose last check failed; one
 // that has not been checked yet gets the benefit of the doubt.
@@ -56,6 +68,7 @@ func (m *upstreamMonitor) Status(name string) UpstreamStatus {
 // run checks the upstreams returned by current, which is asked anew every
 // round so that config changes are picked up, until ctx is cancelled.
 func (m *upstreamMonitor) run(ctx context.Context, current func() map[string]egress.Upstream) {
+	defer close(m.done)
 	for {
 		upstreams := current()
 		var wg sync.WaitGroup
@@ -65,7 +78,7 @@ func (m *upstreamMonitor) run(ctx context.Context, current func() map[string]egr
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				cctx, cancel := context.WithTimeout(ctx, upstreamCheckTimeout)
+				cctx, cancel := context.WithTimeout(ctx, m.timeout)
 				defer cancel()
 				st := UpstreamStatus{Name: name, Reachable: true, Checked: time.Now()}
 				if err := up.Check(cctx); err != nil {
@@ -88,7 +101,7 @@ func (m *upstreamMonitor) run(ctx context.Context, current func() map[string]egr
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(upstreamCheckInterval):
+		case <-time.After(m.interval):
 		}
 	}
 }
