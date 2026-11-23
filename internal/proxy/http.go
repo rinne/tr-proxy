@@ -49,8 +49,10 @@ func (s *Server) ServeHTTP(ctx context.Context, ln net.Listener) {
 	}
 	forward := &httputil.ReverseProxy{
 		// The outgoing request already carries the absolute URL; forward it
-		// unchanged and add no X-Forwarded-* headers.
-		Rewrite:      func(*httputil.ProxyRequest) {},
+		// unchanged and add no X-Forwarded-* headers. ReverseProxy drops
+		// query parameters it cannot parse (such as "a=1;b=2") before
+		// Rewrite; the query goes on as the client sent it.
+		Rewrite:      func(pr *httputil.ProxyRequest) { pr.Out.URL.RawQuery = pr.In.URL.RawQuery },
 		Transport:    transport,
 		ErrorLog:     log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) { httpError(w, err) },

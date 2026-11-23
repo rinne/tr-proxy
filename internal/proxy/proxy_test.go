@@ -7,10 +7,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"tr-proxy/internal/egress"
 )
 
 // recordingRouter remembers the hosts it was asked about and refuses them
@@ -172,5 +176,46 @@ func TestHTTPKeepAliveEndsWhenListenerCloses(t *testing.T) {
 	io.WriteString(c, req)
 	if resp, err := http.ReadResponse(br, nil); err == nil {
 		t.Fatalf("request after the listener closed was answered: %d", resp.StatusCode)
+	}
+}
+
+// directRouter sends everything out directly, local addresses included.
+type directRouter struct{}
+
+func (directRouter) Route(listener, host string) (Route, error) {
+	return Route{Egress: "direct", Dialer: egress.Direct{AllowLocal: true}}, nil
+}
+
+func TestHTTPForwardKeepsQuery(t *testing.T) {
+	queries := make(chan string, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries <- r.URL.RawQuery
+	}))
+	defer origin.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	s := &Server{
+		Name:    "test",
+		Router:  directRouter{},
+		Tracker: NewTracker(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	go s.ServeHTTP(context.Background(), ln)
+
+	proxyURL, _ := url.Parse("http://" + ln.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 5 * time.Second}
+	for _, q := range []string{"a=1;b=2", "x=%zz&y=2", "plain=1&b=%20"} {
+		resp, err := client.Get(origin.URL + "/p?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := <-queries; got != q {
+			t.Errorf("query %q arrived as %q", q, got)
+		}
 	}
 }
