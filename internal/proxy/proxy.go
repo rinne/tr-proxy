@@ -104,7 +104,7 @@ func (s *Server) connect(ctx context.Context, client, host string, port int) (ne
 	if err != nil {
 		s.Log.Info("dial failed", "listener", s.Name, "client", client, "destination", dest,
 			"rule", route.Rule, "egress", route.Egress, "err", err.Error())
-		if errors.Is(err, egress.ErrLocalDestination) {
+		if errors.Is(err, egress.ErrLocalDestination) || errors.Is(err, egress.ErrRuledAddress) {
 			return nil, nil, fmt.Errorf("%w: %w", ErrBlocked, err)
 		}
 		return nil, nil, fmt.Errorf("via %s: %w", route.Egress, err)

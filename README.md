@@ -90,7 +90,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:1080-1099:1080-1099 \
 
 ## How Routing Works
 
-- Rules are tried in order and the first match decides. A rule matches hostnames (`host.example.com`, `*.example.com`) or addresses (`1.2.3.4`, `1.2.3.0/24`, `1.2.3.4-1.2.3.7`). A hostname is only compared with hostname matchers and an address only with address matchers, so clients should send names.
+- Rules are tried in order and the first match decides. A rule matches hostnames (`host.example.com`, `*.example.com`) or addresses (`1.2.3.4`, `1.2.3.0/24`, `1.2.3.4-1.2.3.7`). A hostname is only compared with hostname matchers and an address only with address matchers, so clients should send names. One exception keeps a name from getting around an address rule: a hostname that no hostname rule matches and that goes out direct by default is checked against the address rules once it is resolved, and refused if they would block its address or send it elsewhere.
 - A rule's route can be a list. The first healthy entry is used. If none is healthy the connection is refused; it never falls back to a direct connection unless `direct` is in the list.
 - A rule can be limited to some listeners or excluded from some, and a listener can have its own default route.
 - A hostname is resolved where the connection leaves: by the tunnel's DNS servers, by the upstream proxy, or by the container for `direct`.
@@ -190,7 +190,7 @@ If you mount a host directory on `/config` instead of a named volume, it must be
 mkdir -p config && sudo chown 65532:65532 config
 ```
 
-The direct route refuses loopback and link-local destinations and the container's own addresses by default. That keeps proxy clients away from the container's own admin API, also at its Docker network address, and, on a cloud host, from the metadata service at 169.254.169.254. Destinations that are neither an IP address nor a valid hostname are refused. Private networks (10.0.0.0/8 and the like) are not refused: block them with rules if clients should not reach them.
+The direct route refuses loopback and link-local destinations and the container's own addresses by default. That keeps proxy clients away from the container's own admin API, also at its Docker network address, and, on a cloud host, from the metadata service at 169.254.169.254. Destinations that are neither an IP address nor a valid hostname are refused. Private networks (10.0.0.0/8 and the like, and the Docker host at its bridge address, often 172.17.0.1) are not refused: block them with rules if clients should not reach them. Such a rule also holds for names that resolve into the network, unless a hostname rule sends the name direct.
 
 ### Watching it
 

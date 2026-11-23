@@ -29,6 +29,10 @@ type Dialer interface {
 // a link-local network, or an address of the container itself.
 var ErrLocalDestination = errors.New("destination is a local address, which the direct route does not reach")
 
+// ErrRuledAddress is returned by Direct when its Check refuses the address
+// a hostname resolved to.
+var ErrRuledAddress = errors.New("destination resolves to an address that the rules do not send direct")
+
 // Direct connects from the container itself, resolving with its resolver.
 //
 // Unless AllowLocal is set it refuses loopback, link-local, multicast and
@@ -38,26 +42,34 @@ var ErrLocalDestination = errors.New("destination is a local address, which the 
 // interface, or a cloud host's metadata service at 169.254.169.254. The
 // check is made on the address actually connected to, after name
 // resolution.
+//
+// Check, if set, is asked about every address connected to, after name
+// resolution, and refuses it by returning an error (which should wrap
+// ErrRuledAddress).
 type Direct struct {
 	AllowLocal bool
+	Check      func(netip.Addr) error
 }
 
 func (d Direct) Dial(ctx context.Context, host string, port int) (net.Conn, error) {
 	nd := net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}
-	if !d.AllowLocal {
-		nd.Control = refuseLocal
+	if !d.AllowLocal || d.Check != nil {
+		nd.Control = d.control
 	}
 	return nd.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 }
 
-func refuseLocal(network, address string, _ syscall.RawConn) error {
+func (d Direct) control(network, address string, _ syscall.RawConn) error {
 	ap, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return fmt.Errorf("unexpected dial address %q", address)
 	}
 	ip := ap.Addr().Unmap().WithZone("")
-	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ownAddresses.has(ip) {
+	if !d.AllowLocal && (ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ownAddresses.has(ip)) {
 		return ErrLocalDestination
+	}
+	if d.Check != nil {
+		return d.Check(ip)
 	}
 	return nil
 }

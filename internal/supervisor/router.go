@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"tr-proxy/internal/config"
@@ -101,7 +102,7 @@ func (s *Server) decide(listener, host string) (routeResult, egress.Dialer) {
 		switch s.health(st, name) {
 		case healthUp:
 			res.Egress = name
-			return res, st.dialers[name]
+			return res, s.dialer(st, listener, host, res)
 		case healthDegraded:
 			if degraded == "" {
 				degraded = name
@@ -110,10 +111,37 @@ func (s *Server) decide(listener, host string) (routeResult, egress.Dialer) {
 	}
 	if degraded != "" {
 		res.Egress = degraded
-		return res, st.dialers[degraded]
+		return res, s.dialer(st, listener, host, res)
 	}
 	res.Err = fmt.Errorf("%w (%s)", proxy.ErrUnavailable, strings.Join(d.Via, ", "))
 	return res, nil
+}
+
+// dialer returns the dialer for the chosen egress. A hostname that no
+// hostname rule matched and that goes out directly by default is also
+// checked against the address rules once it is resolved: if the address
+// would be blocked or sent elsewhere, the connection is refused, so that a
+// name cannot be used to get around a rule for its address. Names are not
+// resolved beforehand, which would ask the container's resolver about
+// names meant for a tunnel's DNS.
+func (s *Server) dialer(st *state, listener, host string, res routeResult) egress.Dialer {
+	d := st.dialers[res.Egress]
+	if res.Rule != "" || res.Egress != config.EgressDirect {
+		return d
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return d
+	}
+	return egress.Direct{
+		AllowLocal: st.limits.AllowLocalDirect,
+		Check: func(ip netip.Addr) error {
+			r, _ := s.decide(listener, ip.String())
+			if r.Rule == "" || r.Egress == config.EgressDirect {
+				return nil
+			}
+			return fmt.Errorf("%w (%s, rule %q)", egress.ErrRuledAddress, ip, r.Rule)
+		},
+	}
 }
 
 type health int

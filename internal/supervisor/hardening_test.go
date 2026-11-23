@@ -286,6 +286,59 @@ func TestDirectDoesNotReachLocalAddresses(t *testing.T) {
 	}
 }
 
+// A hostname that goes out directly by default does not get around a rule
+// for the address it resolves to; a rule for the name itself still decides.
+func TestAddressRulesApplyToResolvedNames(t *testing.T) {
+	cfg := config.New()
+	socksPort, webPort := freePort(t), freePort(t)
+	cfg.Listeners = []config.Listener{
+		{Name: "socks", Type: "socks5", Port: socksPort},
+		{Name: "web", Type: "http", Port: webPort},
+	}
+	cfg.Rules = []config.Rule{
+		{Name: "named", Match: []string{"localhost"}, Via: config.Via{"direct"}, OnlyListeners: []string{"web"}},
+		{Name: "no-loopback", Match: []string{"127.0.0.0/8", "::1"}, Via: config.Via{"block"}},
+	}
+	cfg.Limits = &config.Limits{AllowLocalDirect: true, DrainTimeout: intPtr(0)}
+	s := startServer(t, cfg)
+	host, echoPort := localEcho(t)
+
+	// On the SOCKS5 listener no hostname rule matches "localhost", and its
+	// addresses are blocked.
+	d := socksDialer(t, socksPort, nil)
+	if err := echoVia(d, "localhost", echoPort); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("SOCKS5 to localhost: %v, want a refusal", err)
+	}
+	if err := echoVia(d, host, echoPort); err == nil {
+		t.Error("SOCKS5 to 127.0.0.1 was not blocked")
+	}
+	if n := len(s.tracker.Snapshot()); n != 0 {
+		t.Errorf("%d refused connections are tracked as open", n)
+	}
+	// A name with no address rule in its way still works.
+	without := s.Config()
+	without.Rules = without.Rules[:1]
+	if err := s.Apply(without); err != nil {
+		t.Fatal(err)
+	}
+	if err := echoVia(d, "localhost", echoPort); err != nil {
+		t.Errorf("SOCKS5 to localhost without the address rule: %v", err)
+	}
+	if err := s.Apply(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// On the HTTP listener the hostname rule sends "localhost" direct, and
+	// that is what happens.
+	status, c, err := connectVia(webPort, fmt.Sprintf("localhost:%d", echoPort))
+	if err != nil || !strings.Contains(status, " 200 ") {
+		t.Errorf("CONNECT localhost under a hostname rule: %q %v, want 200", status, err)
+	}
+	if c != nil {
+		c.Close()
+	}
+}
+
 func TestShutdownDrainsOpenConnections(t *testing.T) {
 	fx := newTunnelFixture(t, "T1")
 	cfg := config.New()

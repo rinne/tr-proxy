@@ -265,6 +265,16 @@ HTTP `CONNECT`) is matched on the hostname, and the hostname is then resolved
 on the chosen egress path: tunnel DNS for WireGuard, the upstream itself for
 HTTP proxies, the container resolver for `direct`.
 
+One exception keeps a name from getting around a rule for its address: when
+no hostname rule matched and the default sends the connection `direct`, each
+address the name resolves to is routed like a client that sent that address.
+If an address rule would block it, or send it to another egress, that
+address is refused (HTTP 403, SOCKS5 reply 2); if the name has other
+addresses, they are tried. A hostname rule that sends the name `direct` is
+followed as it is. Names are not resolved before routing, so a name meant
+for a tunnel's DNS never reaches the container's resolver. The route test of
+the admin API shows the decision for the name only.
+
 ### 5.6 Limits
 
 `limits` and each of its fields are optional; a field left out takes its
