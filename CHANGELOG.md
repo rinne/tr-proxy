@@ -2,6 +2,12 @@
 
 All notable changes to `tr-proxy` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The admin UI's vendored Alpine.js is updated from 3.14.9 to 3.17.5. No change in the UI's behaviour is intended. The update brings upstream fixes, among them for `x-model` on a `<select>` whose options come from `x-for`, which the UI uses. No advisories had been published against 3.14.9, and the UI's CSP is unchanged.
+
 ## [0.2.3] - 2026-11-23
 
 ### Security
